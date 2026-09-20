@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import subprocess
 import time
 import wave
+from pathlib import Path
 
 from functools import lru_cache
 
@@ -24,7 +26,7 @@ _HALLUCINATIONS = {"thank you.", "thanks for watching.", "thank you for watching
 # base.en's 60 ms, 20 terms cost +7 ms for the same practical benefit. The list must be
 # prioritised rather than truncated alphabetically -- an alphabetical cut drops
 # everything past roughly "R", which is how "Spotify" became "spot if I am".
-_WHISPER_BIAS_MAX = int(os.environ.get("STT_BIAS_TERMS", "20"))
+_WHISPER_BIAS_MAX = int(os.environ.get("STT_BIAS_TERMS", "26"))
 
 
 @lru_cache(maxsize=1)
@@ -66,6 +68,32 @@ def _last_used() -> dict[str, float]:
     return used
 
 
+# Names the user says that are not app names: their own Discord channels and browser
+# spaces. Small sets, and exactly the words whisper gets wrong -- "General" came back as
+# "journal" repeatedly, which no amount of app-name biasing would have fixed.
+_OWN_NAME_KINDS = ("arc_space", "discord_voice_channel", "discord_text_channel")
+
+
+def own_names(limit: int = 8) -> list[str]:
+    """The user's own short names, rarest-and-most-spoken first.
+
+    Kept small on purpose: these share a budget with app names, and every extra term
+    in whisper's initial prompt is decode time.
+    """
+    try:
+        from . import catalog
+
+        entities = catalog.load(rebuild=False)
+    except Exception:
+        return []
+    seen: list[str] = []
+    for kind in _OWN_NAME_KINDS:          # spaces and voice channels before text ones
+        for e in entities:
+            if e.kind == kind and len(e.name) < 24 and e.name not in seen:
+                seen.append(e.name)
+    return seen[:limit]
+
+
 def bias_terms() -> list[str]:
     """Proper nouns the recogniser should prefer, most-recently-used first."""
     if not config.STT_BIAS_VOCAB:
@@ -75,7 +103,45 @@ def bias_terms() -> list[str]:
     recent = _last_used()
     names = [a for a in actions.installed_apps() if not a.startswith(".")]
     # Most recently used first; never-opened apps keep a stable alphabetical tail.
-    return sorted(names, key=lambda n: (-recent.get(n, 0.0), n.lower()))
+    ranked = sorted(names, key=lambda n: (-recent.get(n, 0.0), n.lower()))
+    # The user's own names go first: they are rarer words than app names, so they need
+    # the bias more, and there are few enough of them to cost almost nothing.
+    return own_names() + ranked
+
+
+_PHONETICS_FILE = Path(__file__).with_name("data") / "phonetics.json"
+
+
+@lru_cache(maxsize=1)
+def _phonetic_rules() -> list[tuple[object, str]]:
+    try:
+        import json
+
+        payload = json.loads(_PHONETICS_FILE.read_text())
+    except (OSError, ValueError):
+        return []
+    rules = []
+    for rule in payload.get("rules", []):
+        try:
+            rules.append((re.compile(rule["pattern"], re.I), rule["replace"]))
+        except (KeyError, re.error):
+            continue
+    return rules
+
+
+def correct(text: str) -> str:
+    """Fix words the recogniser reliably gets wrong before anything acts on them.
+
+    Biasing whisper is the first line of defence but it is not enough on its own: with
+    an accent it kept hearing "deafen me" as "defend me", which then planned as typing
+    text rather than a Discord command. A rule only belongs here when the wrong word is
+    one the user would never actually say to their computer.
+    """
+    if not text:
+        return text
+    for pattern, replacement in _phonetic_rules():
+        text = pattern.sub(replacement, text)
+    return text
 
 
 @lru_cache(maxsize=1)

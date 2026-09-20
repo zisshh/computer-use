@@ -56,11 +56,17 @@ def _browser_names(ctx) -> bool:
 
 
 def media_route(utterance: str, ctx, model_service: str = "",
-                model_target: str = "") -> MediaRoute:
-    """The precedence ladder, applied once for both 'play X' and bare 'pause'.
+                model_target: str = "", named: bool = False) -> MediaRoute:
+    """Which player a media command belongs to.
 
-    Running the same ladder for both is the point: it is what stops "play nights" and
-    "pause" from disagreeing about which player the user is talking to.
+    `named` separates the two cases, because the right answer genuinely differs:
+
+    * A NAMED song is a request to a music library -- "play nights by frank ocean" means
+      Spotify even while a video is on screen, because that is where the song lives.
+    * BARE transport is about what the user can see and hear -- "pause" with a YouTube
+      tab in front means that tab, not whatever Spotify has queued.
+
+    Naming a service, or pointing at something ("play this"), outranks both.
     """
     if ctx is None:
         return MediaRoute(model_service or "spotify", model_target or "desktop_player",
@@ -81,6 +87,11 @@ def media_route(utterance: str, ctx, model_service: str = "",
         if ctx.frontmost_app in ("Spotify", "Music"):
             return MediaRoute("spotify" if ctx.frontmost_app == "Spotify" else "apple_music",
                               "desktop_player", "deixis, player focused")
+
+    # A named song belongs to the music library, not to whatever video is on screen.
+    if named:
+        return MediaRoute(model_service if model_service in ("spotify", "apple_music")
+                          else "spotify", "desktop_player", "named song")
 
     # 3. The app in front of them owns media right now.
     if _browser_names(ctx) and tab_playable:

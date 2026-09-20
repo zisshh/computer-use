@@ -22,7 +22,6 @@ from AppKit import (  # type: ignore
     NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
     NSStatusWindowLevel,
 )
-from Foundation import NSObject  # type: ignore
 from PyObjCTools import AppHelper  # type: ignore
 
 COLORS = {

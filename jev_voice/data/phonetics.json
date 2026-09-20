@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "note": "Corrections applied to the transcript before anything reads it. Each rule is a regex matched case-insensitively against the whole utterance. Only add a rule when the wrong word is one the user would essentially never say to their computer, so the correction cannot cost them a real command.",
+  "rules": [
+    {"pattern": "\\bdefend(?:s|ed|ing)?\\b(?=.*\\b(me|discord|call|myself|mic)\\b)", "replace": "deafen", "why": "\"deafen\" is heard as \"defend\" almost every time"},
+    {"pattern": "\\b(?:de ?fen|deafen|def in|the fan|defiant)\\b(?=.*\\b(me|discord|call)\\b)", "replace": "deafen"},
+    {"pattern": "\\bun ?defend(?:ed)?\\b", "replace": "undeafen"},
+    {"pattern": "\\bun ?de ?fen\\b", "replace": "undeafen"},
+    {"pattern": "\\bdis ?connect\\b", "replace": "disconnect"},
+    {"pattern": "\\bun ?mute\\b", "replace": "unmute"},
+    {"pattern": "\\bspot ?if ?(?:i|y|ie)(?: am)?\\b", "replace": "Spotify"},
+    {"pattern": "\\bdis ?cord\\b", "replace": "Discord"},
+    {"pattern": "\\bno ?shun\\b", "replace": "Notion"},
+    {"pattern": "\\bob ?sidian\\b", "replace": "Obsidian"},
+    {"pattern": "\\bwhats ?app\\b", "replace": "WhatsApp"},
+    {"pattern": "\\byou ?tube\\b", "replace": "YouTube"},
+    {"pattern": "\\bin ?sta ?gram\\b", "replace": "Instagram"},
+    {"pattern": "\\bghost ?y\\b", "replace": "Ghostty"},
+    {"pattern": "\\breal ?s\\b(?=.*\\b(instagram|insta)\\b)", "replace": "reels"},
+    {"pattern": "\\breel ?ton\\b", "replace": "reels on"},
+    {"pattern": "\\bzee ?ro\\b|\\bzero\\b(?=\\s*(hq|server))", "replace": "ziiro"}
+  ]
+}

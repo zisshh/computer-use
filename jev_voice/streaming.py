@@ -189,7 +189,9 @@ class Speculator:
 
     def _work(self, pcm) -> None:
         try:
-            text = self.transcribe(pcm)
+            from .stt import correct
+
+            text = correct(self.transcribe(pcm))
             if text:
                 self.feed_text(text)
         except Exception:

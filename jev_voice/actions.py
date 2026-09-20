@@ -31,6 +31,43 @@ ALWAYS_APPS = ["Finder", "Safari", "Terminal", "System Settings", "Notes", "Mess
                "TextEdit", "Preview", "Activity Monitor", "FaceTime", "Maps"]
 
 
+# Bundles that exist to support another app, not to be launched by name.
+_APP_NOISE = re.compile(
+    r"(helper|uninstall|updater|crash|reporter|agent|daemon|commandline|"
+    r"\(.*\)|setup assistant|diagnostics)", re.I)
+
+
+def _spotlight_apps() -> set[str]:
+    """Every app bundle on the machine, from Spotlight. ~0.1s, and it finds the ones a
+    directory scan cannot.
+
+    WhatsApp installs to `/Applications/WhatsApp-1.localized/WhatsApp.app` -- one level
+    deeper than a top-level scan looks -- so "open whatsapp" answered "that application
+    is not installed" while the app sat in the Dock. Scanning a level deeper by hand
+    drags in every Cinema 4D helper and uninstaller instead; Spotlight knows what is
+    really an application.
+    """
+    try:
+        out = subprocess.run(
+            ["mdfind", "kMDItemContentType == 'com.apple.application-bundle'"],
+            capture_output=True, text=True, timeout=6.0).stdout
+    except Exception:
+        return set()
+    roots = ("/Applications/", "/System/Applications/", str(Path.home() / "Applications") + "/")
+    names: set[str] = set()
+    for line in out.splitlines():
+        line = line.strip()
+        # Spotlight also indexes ~230 internal agents under /System/Library and every
+        # updater under /Library/Application Support. Those are not things to say aloud.
+        if not line.startswith(roots) or "/Contents/" in line:
+            continue
+        path = Path(line)
+        if path.suffix != ".app" or _APP_NOISE.search(path.stem):
+            continue
+        names.add(path.stem)
+    return names
+
+
 @lru_cache(maxsize=1)
 def installed_apps() -> list[str]:
     names: set[str] = set(ALWAYS_APPS)
@@ -40,6 +77,7 @@ def installed_apps() -> list[str]:
         for p in d.iterdir():
             if p.suffix == ".app":
                 names.add(p.stem)
+    names |= _spotlight_apps()
     return sorted(names, key=str.lower)
 
 
@@ -132,6 +170,15 @@ SITES: dict[str, str] = {
     "twitch": "https://www.twitch.tv",
     "figma": "https://www.figma.com",
     "typesafe_console": "https://console.typesafe.ai",
+    # Sections people ask for by name. A section is a place, not a search: "go to
+    # my reels" kept landing on the Instagram home feed because only the site root
+    # was addressable.
+    "instagram_reels": "https://www.instagram.com/reels/",
+    "instagram_messages": "https://www.instagram.com/direct/inbox/",
+    "youtube_subscriptions": "https://www.youtube.com/feed/subscriptions",
+    "youtube_history": "https://www.youtube.com/feed/history",
+    "youtube_watch_later": "https://www.youtube.com/playlist?list=WL",
+    "reddit_popular": "https://www.reddit.com/r/popular/",
 }
 
 SEARCH_ENGINES: dict[str, str] = {
@@ -149,14 +196,17 @@ SEARCH_ENGINES: dict[str, str] = {
 
 
 def web_search(engine: str, query: str) -> str | None:
-    """Run the search in the browser the user already has open."""
+    """Run the search in the browser the user already has open.
+
+    If they are already on that site -- which is exactly what "open youtube and search
+    for X" leaves them on -- the search happens in that tab instead of a second one.
+    Typing into the site's own search box would be slower and far more fragile than
+    asking for the results URL directly.
+    """
     tpl = SEARCH_ENGINES.get(engine, SEARCH_ENGINES["google"])
     url = tpl.replace("{q}", quote_plus(query))
-    opened = open_in_running_browser(url)
-    if opened:
-        return opened
-    open_url(url)
-    return None
+    open_for_search(url, split_url(url)[0])
+    return frontmost_app() if any(frontmost_app() == b for b, _ in BROWSERS) else None
 
 
 # ---------------------------------------------------------------- app control
@@ -815,11 +865,13 @@ def play_named_track(query: str, service: str = "spotify") -> str:
     # No credentials means Spotify can only be *searched*, never told to play a named
     # track. Falling back to YouTube actually plays the song instead of leaving the user
     # staring at a search result they still have to click.
-    if os.environ.get("PLAY_FALLBACK", "youtube").lower() == "youtube":
-        return (play_on_youtube(query)
-                + " I can't play named songs on Spotify without its API keys.")
+    if os.environ.get("PLAY_FALLBACK", "search").lower() == "youtube":
+        return play_on_youtube(query)
+    # Quietly playing the song somewhere else is a second surprise on top of the first.
+    # Show it in Spotify, say exactly what is missing, and leave the choice with the user.
     osa.open_url(spotify_search_uri(query))
-    return "Searching Spotify for " + query + ". Add Spotify API keys to play it outright."
+    return ("I need Spotify's API keys to play a song by name -- SPOTIFY_CLIENT_ID and "
+            "SPOTIFY_CLIENT_SECRET in .env. I've opened the search for " + query + ".")
 
 
 # ---------------------------------------------------------------- keyboard
@@ -1036,6 +1088,104 @@ def media(op: str) -> None:
             14, (0, 0), flags, 0, 0, None, 8, data1, -1
         )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev.CGEvent())
+
+
+_APP_MEDIA: dict[str, dict[str, str]] = {
+    "Spotify": {"play": "play", "pause": "pause", "play_pause": "playpause",
+                "next": "next track", "previous": "previous track"},
+    "Music": {"play": "play", "pause": "pause", "play_pause": "playpause",
+              "next": "next track", "previous": "previous track"},
+}
+
+
+def app_media(app: str, op: str) -> str:
+    """Drive a named desktop player, and report what it is doing afterwards.
+
+    Addressing the app beats MediaRemote whenever the target is known: MediaRemote goes
+    to whichever app LAST registered as the Now Playing owner, so "open spotify" then
+    "play" toggled a YouTube tab in the browser instead -- the exact complaint.
+    """
+    commands = _APP_MEDIA.get(app)
+    if not commands or op not in commands or app not in running_apps():
+        return ""
+    try:
+        _osascript(f'tell application "{_as_str(app)}" to {commands[op]}')
+    except RuntimeError:
+        return ""
+    try:
+        state = _osascript(f'tell application "{_as_str(app)}" to return player state as text')
+    except RuntimeError:
+        return "Done."
+    return "Playing." if state.strip().lower() == "playing" else "Paused."
+
+
+# ---------------------------------------------------------------- ducking
+
+DUCK_ENABLED = os.environ.get("DUCK", "1") not in ("0", "false", "no")
+DUCK_LEVEL = float(os.environ.get("DUCK_LEVEL", "0.18"))
+
+_ducked: dict[str, object] = {}
+
+_TAB_VOLUME_JS = (
+    "(function(v){" + _PICK_MEDIA.replace("var v=", "var el=") +
+    "if(!el)return 'novideo';"
+    "if(v<0){el.volume=window.__jevVol===undefined?el.volume:window.__jevVol;"
+    "window.__jevVol=undefined;return 'restored'}"
+    "if(window.__jevVol===undefined)window.__jevVol=el.volume;"
+    "el.volume=v;return 'ducked'})(@V@)"
+)
+
+
+def duck(on: bool = True) -> str:
+    """Turn the music down while the user is talking, and back up afterwards.
+
+    Their own speakers are the loudest thing in the room, so a command spoken over a
+    playing song arrives buried -- "I have to literally shout 'pause'". Every assistant
+    that listens while it plays does this; the volume goes back exactly where it was.
+    """
+    if not DUCK_ENABLED:
+        return ""
+    if on and _ducked:
+        return ""                       # already down; do not stack
+    if not on and not _ducked:
+        return ""
+
+    from . import context
+
+    app = _ducked.get("app") or context.playback_owner()[0]
+    if not app:
+        return ""
+
+    if app in ("Spotify", "Music"):
+        try:
+            if on:
+                before = _osascript(f'tell application "{_as_str(app)}" to return sound volume')
+                _ducked.update(app=app, volume=before)
+                level = max(0, int(float(before) * DUCK_LEVEL))
+                _osascript(f'tell application "{_as_str(app)}" to set sound volume to {level}')
+            else:
+                _osascript(f'tell application "{_as_str(app)}" to set sound volume to '
+                           f'{int(float(_ducked.get("volume", 70)))}')
+                _ducked.clear()
+            return app
+        except (RuntimeError, ValueError):
+            _ducked.clear()
+            return ""
+
+    if any(app == browser for browser, _ in BROWSERS):
+        # The page remembers its own level on `window`, so a reload cannot strand it quiet.
+        js = _TAB_VOLUME_JS.replace("@V@", str(DUCK_LEVEL) if on else "-1")
+        result = browser_js(js, app=app, timeout=3)
+        if on and result == "ducked":
+            _ducked.update(app=app, volume=None)
+        elif not on:
+            _ducked.clear()
+        return app if result in ("ducked", "restored") else ""
+    return ""
+
+
+def unduck() -> str:
+    return duck(False)
 
 
 # ---------------------------------------------------------------- misc

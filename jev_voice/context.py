@@ -216,6 +216,30 @@ def now_playing(tab: tuple[str, bool, str] | None = None) -> tuple[str, str, str
     return "", "", "", False
 
 
+_PLAYING = {"at": 0.0, "value": False, "busy": False}
+
+
+def _refresh_playing() -> None:
+    try:
+        live = bool(now_playing()[3])
+    except Exception:
+        live = False
+    _PLAYING.update(at=time.monotonic(), value=live, busy=False)
+
+
+def media_playing(max_age: float = 2.0) -> bool:
+    """Is audio coming out of the speakers right now?
+
+    Never blocks: the answer is whatever was last measured, and a stale one kicks off a
+    background refresh. This is read from the audio loop, where a 170ms liveness check
+    would stall frame handling -- and being one utterance out of date costs nothing.
+    """
+    if not _PLAYING["busy"] and time.monotonic() - _PLAYING["at"] > max_age:
+        _PLAYING["busy"] = True
+        threading.Thread(target=_refresh_playing, daemon=True, name="jev-playing").start()
+    return bool(_PLAYING["value"])
+
+
 def display_count() -> int:
     try:
         from AppKit import NSScreen  # type: ignore

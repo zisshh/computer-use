@@ -26,6 +26,8 @@ from typing import Any
 from . import actions, config, routing
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
+from .context import media_playing as context_media_playing
+from .stt import correct as stt_correct
 from .streaming import Speculator, normalise, retracted
 from .overlay import NullOverlay
 from .persona import flavor
@@ -167,8 +169,13 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
             return f"Switching to {site}."
         return f"Opening {site}."
     if act == "web_search":
-        actions.web_search(a["engine"], a["query"])
-        return f"Searching {a['engine'].replace('_', ' ')} for {a['query']}."
+        query = (a.get("query") or "").strip(" .,")
+        # "Search for..." trailing off left the payload as the word "for", which then
+        # got searched. A search with nothing in it is a question, not a command.
+        if len(query) < 2 or query.lower() in _EMPTY_QUERY:
+            return f"Search {a['engine'].replace('_', ' ')} for what?"
+        actions.web_search(a["engine"], query)
+        return f"Searching {a['engine'].replace('_', ' ')} for {query}."
     if act == "type_text":
         actions.type_text(a["text"])
         if a["submit"]:
@@ -191,7 +198,12 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
             result = actions.tab_media(a["op"])
             if result and result != "novideo":
                 return {"play": "Playing.", "pause": "Paused."}.get(result, "Done.")
-        actions.media(a["op"])
+        player = {"spotify": "Spotify", "apple_music": "Music"}.get(route.service, "")
+        if player:
+            spoken = actions.app_media(player, a["op"])
+            if spoken:
+                return spoken
+        actions.media(a["op"])      # last resort: whoever macOS thinks is playing
         return ""
     if act == "screenshot":
         actions.screenshot()
@@ -231,7 +243,8 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
         ok = actions.quit_named_app(app)
         return f"Quitting {app}." if ok else f"I couldn't quit {app}."
     if act == "play_track":
-        route = routing.media_route(utterance, ctx, model_service=a.get("service", ""))
+        route = routing.media_route(utterance, ctx, model_service=a.get("service", ""),
+                                    named=True)
         if route.service == "youtube":
             return actions.play_on_youtube(a["query"])
         return actions.play_named_track(a["query"], route.service)
@@ -339,6 +352,15 @@ def run_text(args: argparse.Namespace) -> None:
     handle(brain, speaker, args.text, args.dry_run, ctx=snapshot())
 
 
+_EMPTY_QUERY = frozenset({"for", "it", "this", "that", "something", "the", "a", "up",
+                          "and", "on", "me"})
+
+
+def duck_now() -> None:
+    """Turn the music down for the duration of the sentence, off the audio thread."""
+    threading.Thread(target=actions.duck, daemon=True, name="jev-duck").start()
+
+
 def _announce_early(done) -> None:
     """Show a speculative action, but never speak over the person still talking."""
     print(f"  ⚡ {done.reply or done.action} (while you were speaking)")
@@ -365,12 +387,14 @@ class Session:
                                      dry=args.dry_run, on_action=_announce_early)
         self.listener.on_partial = self.speculator.feed_audio
         self.listener.on_speech_start = self._on_speech
+        self.listener.media_active = context_media_playing
         self.listener.start()
 
     def _on_speech(self) -> None:
         """Everything that can be done before the sentence exists, done now."""
         self.context.prefetch()
         self.speculator.begin()
+        duck_now()
 
     def close(self) -> None:
         self.listener.stop()
@@ -381,7 +405,7 @@ class Session:
         if len(pcm) < config.SAMPLE_RATE * 0.25:
             return True
         t0 = time.perf_counter()
-        text = self.stt.transcribe(pcm)
+        text = stt_correct(self.stt.transcribe(pcm))
         self.speculator.seal()
         stt_ms = int((time.perf_counter() - t0) * 1000)
         if not text:
@@ -394,6 +418,7 @@ class Session:
         if self.speaker.speaking():
             self.listener.pause(0.9)
         self.listener.drain()
+        actions.unduck()
         return ok
 
 
@@ -484,58 +509,64 @@ def run_smart(s: Session) -> None:
     def _on_speech() -> None:
         OVERLAY.set("listening", "Listening…")
         s.context.prefetch()          # gathered while the user is still talking
+        duck_now()
         # Armed or not decides whether a prefix may act without naming the assistant.
         s.speculator.begin(addressed=time.monotonic() < armed["until"])
 
     s.listener.on_speech_start = _on_speech
     while True:
-        pcm = s.listener.next_utterance()
-        OVERLAY.set("heard", "Transcribing…")
-        t0 = time.perf_counter()
-        text = s.stt.transcribe(pcm)
-        s.speculator.seal()           # the sentence exists now; stop guessing at it
-        stt_ms = int((time.perf_counter() - t0) * 1000)
-        if not text:
-            OVERLAY.set("idle", IDLE_LABEL, revert_after=0.1)
-            continue
-        OVERLAY.set("heard", text)
-        addressed, cmd = strip_wake(text)
-        followup = not addressed and time.monotonic() < armed["until"]
-        if not cmd and addressed:        # just the name: acknowledge and wait for the command
-            ding(SOUND_START)
+        try:
+            pcm = s.listener.next_utterance()
+            OVERLAY.set("heard", "Transcribing…")
+            t0 = time.perf_counter()
+            text = stt_correct(s.stt.transcribe(pcm))
+            s.speculator.seal()           # the sentence exists now; stop guessing at it
+            stt_ms = int((time.perf_counter() - t0) * 1000)
+            if not text:
+                OVERLAY.set("idle", IDLE_LABEL, revert_after=0.1)
+                continue
+            OVERLAY.set("heard", text)
+            addressed, cmd = strip_wake(text)
+            followup = not addressed and time.monotonic() < armed["until"]
+            if not cmd and addressed:        # just the name: acknowledge and wait for the command
+                ding(SOUND_START)
+                arm(FOLLOWUP_SECONDS)
+                continue
+            gate = None
+            if not addressed:
+                if not (UNNAMED_COMMANDS or followup):
+                    print(f"   ·  {text}   (ignored: no name, stt {stt_ms}ms)")
+                    OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
+                    continue
+                # No name: let Jev judge whether this is a command for the computer at all.
+                min_addressed = FOLLOWUP_MIN_ADDRESSED if followup else UNNAMED_MIN_ADDRESSED
+                min_confidence = FOLLOWUP_MIN_CONFIDENCE if followup else UNNAMED_MIN_CONFIDENCE
+                gate = s.brain.evaluate(text, ctx=s.context.latest())
+                ok_cmd = (gate.args.get("addressed", 0) >= min_addressed
+                          and gate.confidence >= min_confidence)
+                if ok_cmd and gate.action == "none":
+                    print(f"   ·  {text}   (Jev: none, addressed={gate.args.get('addressed')} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
+                    continue
+                if not ok_cmd:
+                    print(f"   ·  {text}   (ignored: addressed={gate.args.get('addressed')} {gate.action} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
+                    OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
+                    continue
+                cmd = text
+            tag = f", addressed={gate.args.get('addressed')}" if gate else ""
+            print(f"🗣  {cmd}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms{tag})")
+            s.listener.pause(0.3)
+            ok = handle(s.brain, s.speaker, cmd, s.args.dry_run, plan=gate,
+                        ctx=s.context.latest(), skip=s.speculator.consumed())
+            if s.speaker.speaking():
+                s.listener.pause(0.9)
+            s.listener.drain()
             arm(FOLLOWUP_SECONDS)
-            continue
-        gate = None
-        if not addressed:
-            if not (UNNAMED_COMMANDS or followup):
-                print(f"   ·  {text}   (ignored: no name, stt {stt_ms}ms)")
-                OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
-                continue
-            # No name: let Jev judge whether this is a command for the computer at all.
-            min_addressed = FOLLOWUP_MIN_ADDRESSED if followup else UNNAMED_MIN_ADDRESSED
-            min_confidence = FOLLOWUP_MIN_CONFIDENCE if followup else UNNAMED_MIN_CONFIDENCE
-            gate = s.brain.evaluate(text, ctx=s.context.latest())
-            ok_cmd = (gate.args.get("addressed", 0) >= min_addressed
-                      and gate.confidence >= min_confidence)
-            if ok_cmd and gate.action == "none":
-                print(f"   ·  {text}   (Jev: none, addressed={gate.args.get('addressed')} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
-                continue
-            if not ok_cmd:
-                print(f"   ·  {text}   (ignored: addressed={gate.args.get('addressed')} {gate.action} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
-                OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
-                continue
-            cmd = text
-        tag = f", addressed={gate.args.get('addressed')}" if gate else ""
-        print(f"🗣  {cmd}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms{tag})")
-        s.listener.pause(0.3)
-        ok = handle(s.brain, s.speaker, cmd, s.args.dry_run, plan=gate,
-                    ctx=s.context.latest(), skip=s.speculator.consumed())
-        if s.speaker.speaking():
-            s.listener.pause(0.9)
-        s.listener.drain()
-        arm(FOLLOWUP_SECONDS)
-        if not ok:
-            break
+            if not ok:
+                break
+        finally:
+            # Whatever happened to this utterance -- acted on, ignored, or a
+            # mis-hear -- the music has to come back up.
+            actions.unduck()
 
 
 def run_capslock(s: Session) -> None:

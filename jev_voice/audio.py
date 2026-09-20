@@ -31,6 +31,11 @@ class VADConfig:
     pre_roll_ms: int = int(os.environ.get("VAD_PRE_ROLL_MS", "240"))
     partial_ms: int = int(os.environ.get("SPECULATE_INTERVAL_MS", "480"))
     threshold_mult: float = float(os.environ.get("VAD_THRESHOLD_MULT", "3.5"))
+    # Applied while the speakers are playing. BELOW 1 on purpose: music raises the
+    # adaptive noise floor, so the same multiplier demands a shout over it -- which
+    # is the complaint. A false trigger costs an ignored line; a missed command
+    # costs the user saying it again, louder.
+    media_mult: float = float(os.environ.get("VAD_MEDIA_MULT", "0.7"))
     floor_min: float = float(os.environ.get("VAD_FLOOR_MIN", "0.004"))
 
 
@@ -46,6 +51,8 @@ class Listener:
         # Called with the audio so far, every partial_ms, while the user is still
         # talking. This is what lets a command start before the sentence ends.
         self.on_partial = None
+        # Optional predicate: is audio playing out of the speakers right now?
+        self.media_active = None
         self.stream = sd.InputStream(
             samplerate=config.SAMPLE_RATE, channels=1, dtype="float32", blocksize=FRAME,
             device=device, callback=self._cb,
@@ -94,7 +101,14 @@ class Listener:
             if not in_speech:
                 # adaptive noise floor (slow up, fast down)
                 self.noise = self.noise * 0.98 + rms * 0.02 if rms > self.noise else self.noise * 0.9 + rms * 0.1
-            thresh = max(v.floor_min, self.noise * v.threshold_mult)
+            mult = v.threshold_mult
+            if not in_speech and self.media_active is not None:
+                try:
+                    if self.media_active():
+                        mult *= v.media_mult
+                except Exception:
+                    pass
+            thresh = max(v.floor_min, self.noise * mult)
             loud = rms > thresh
             if not in_speech:
                 ring.append(frame)
