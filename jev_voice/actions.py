@@ -835,6 +835,44 @@ def spotify_kind(spoken: str) -> tuple[str, str]:
     return kind, cleaned or spoken
 
 
+# Hinglish command scaffolding, stripped from a search query before it is sent.
+# Stripped only from the ENDS, never the middle: "Sidhu Moose Wala" ends in a word that
+# also means "the one who", and "Gully Boy" starts with one. Chipping inwards from the
+# edges keeps a name that happens to contain a command word intact.
+_HINGLISH_TAIL = re.compile(
+    r"\s*\b(?:lagao|laga\s?do|chalao|chala\s?do|bajao|baja\s?do|sunao|suno|sun\s?lo|"
+    r"dikhao|daal\s?do|dalo|play\s+karo|karo|kar\s?do|kardo|"
+    r"gaana|gaane|gana|song|songs|track|ka|ki|ke|naya|nayi|purana)\b\s*$", re.I)
+_HINGLISH_HEAD = re.compile(
+    r"^\s*(?:(?:spotify|youtube|apple\s+music)\s+(?:pe|par|mein|me)\b|"
+    r"mujhe|please|zara|ek|koi|thoda)\s*", re.I)
+
+
+def hinglish_query(spoken: str) -> str:
+    """Drop the Hindi command wrapper so what is left is the thing to search for.
+
+    Jev correctly routes "AP Dhillon ka gaana lagao" to play_track, but hands the whole
+    sentence through as the query -- and Spotify has no song called "AP Dhillon ka gaana
+    lagao". The words that make it a command have to come off before the search.
+    """
+    out = spoken.strip()
+    for _ in range(6):                       # "ka gaana lagao" is three passes
+        before = out
+        out = _HINGLISH_HEAD.sub("", out)
+        out = _HINGLISH_TAIL.sub("", out)
+        out = out.strip(" ,.")
+        if out == before:
+            break
+    return out or spoken
+
+
+# "a song by X" names no track. In Hinglish the generic word is usually what survives
+# the strip, so searching for a track called "gaana" would find the wrong thing.
+_GENERIC_TRACK = re.compile(r"^(?:a\s+|the\s+|some\s+)?"
+                            r"(?:gaana|gaane|gana|song|songs|track|tracks|music|"
+                            r"something|anything)$", re.I)
+
+
 def spotify_query(spoken: str) -> str:
     """Turn "nights by frank ocean" into Spotify's fielded search syntax.
 
@@ -842,8 +880,11 @@ def spotify_query(spoken: str) -> str:
     as free text, which is what made the wrong song come back.
     """
     title, sep, artist = spoken.partition(" by ")
-    if sep and title.strip() and artist.strip():
-        return f"track:{title.strip()} artist:{artist.strip()}"
+    title, artist = title.strip(), artist.strip()
+    if sep and title and artist:
+        if _GENERIC_TRACK.match(title):      # "gaana by Arijit Singh" = anything of his
+            return f"artist:{artist}"
+        return f"track:{title} artist:{artist}"
     return spoken
 
 
@@ -855,7 +896,7 @@ def _spotify_track_uri(query: str) -> str | None:
     token = _spotify_token_get()
     if not token:
         return None
-    kind, cleaned = spotify_kind(query)
+    kind, cleaned = spotify_kind(hinglish_query(query))
     try:
         import httpx
 
