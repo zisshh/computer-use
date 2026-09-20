@@ -407,10 +407,11 @@ class Session:
         """Transcribe + plan + execute. Returns False on 'stop'."""
         if len(pcm) < config.SAMPLE_RATE * 0.25:
             return True
-        if not vad.has_speech(pcm):
+        voiced, pcm = vad.gate(pcm)
+        if not voiced:
             return True
         t0 = time.perf_counter()
-        text = stt_correct(self.stt.transcribe(vad.trim(pcm)))
+        text = stt_correct(self.stt.transcribe(pcm))
         self.speculator.seal()
         stt_ms = int((time.perf_counter() - t0) * 1000)
         if not text or is_noise(text):
@@ -439,7 +440,12 @@ _WAKE_ANY = re.compile(r"\W*\b(?:" + "|".join(map(re.escape, WAKE_WORDS)) + r")\
 
 
 UNNAMED_COMMANDS = os.environ.get("UNNAMED_COMMANDS", "1") not in ("0", "false", "no")
-WAKE_WHEN_PLAYING = os.environ.get("WAKE_WHEN_PLAYING", "1") not in ("0", "false", "no")
+# Off: the assistant must keep working while music plays. Set to 1 to require the
+# name during playback instead -- safer, and much more annoying.
+WAKE_WHEN_PLAYING = os.environ.get("WAKE_WHEN_PLAYING", "0") not in ("0", "false", "no")
+# What an unnamed utterance has to clear while audio is playing.
+PLAYING_MIN_ADDRESSED = float(os.environ.get("PLAYING_MIN_ADDRESSED", "0.80"))
+PLAYING_MIN_CONFIDENCE = float(os.environ.get("PLAYING_MIN_CONFIDENCE", "0.55"))
 UNNAMED_MIN_ADDRESSED = float(os.environ.get("UNNAMED_MIN_ADDRESSED", "0.7"))
 UNNAMED_MIN_CONFIDENCE = float(os.environ.get("UNNAMED_MIN_CONFIDENCE", "0.7"))
 # Inside the follow-up window an utterance is likelier to be a command, but it is
@@ -555,13 +561,14 @@ def run_smart(s: Session) -> None:
             pcm = s.listener.next_utterance()
             # The energy gate only knows the room got louder, and a song gets
             # louder. Ask a detector that knows what a voice is, before spending
-            # anything on whisper or on a decision.
-            if not vad.has_speech(pcm):
+            # anything on whisper or on a decision. One pass gives both answers.
+            voiced, pcm = vad.gate(pcm)
+            if not voiced:
                 OVERLAY.set("idle", IDLE_LABEL, revert_after=0.1)
                 continue
             OVERLAY.set("heard", "Transcribing…")
             t0 = time.perf_counter()
-            text = stt_correct(s.stt.transcribe(vad.trim(pcm)))
+            text = stt_correct(s.stt.transcribe(pcm))
             s.speculator.seal()           # the sentence exists now; stop guessing at it
             stt_ms = int((time.perf_counter() - t0) * 1000)
             # Whisper never returns nothing: given a cough or a bar of music it
@@ -578,11 +585,12 @@ def run_smart(s: Session) -> None:
                 continue
             gate = None
             if not addressed:
-                # Music has words in it. While it is playing, anything that does not
-                # name the assistant is treated as part of the room -- which is what
-                # every always-on assistant does, and the only reliable answer until
-                # the song is removed from the microphone signal itself.
-                if WAKE_WHEN_PLAYING and not followup and context_media_playing():
+                # Music has words in it, so an unnamed utterance during playback is more
+                # likely to be a lyric than a command. Refusing to listen at all was the
+                # wrong answer -- the assistant has to work while music is on. So raise
+                # the bar Jev has to clear instead of closing the door.
+                playing = not followup and context_media_playing()
+                if WAKE_WHEN_PLAYING and playing:
                     print(f"   ·  {text}   (music playing: say the name first)")
                     OVERLAY.set("idle", f"Say the name: {text}", revert_after=2.0)
                     continue
@@ -593,6 +601,9 @@ def run_smart(s: Session) -> None:
                 # No name: let Jev judge whether this is a command for the computer at all.
                 min_addressed = FOLLOWUP_MIN_ADDRESSED if followup else UNNAMED_MIN_ADDRESSED
                 min_confidence = FOLLOWUP_MIN_CONFIDENCE if followup else UNNAMED_MIN_CONFIDENCE
+                if playing:
+                    min_addressed = max(min_addressed, PLAYING_MIN_ADDRESSED)
+                    min_confidence = max(min_confidence, PLAYING_MIN_CONFIDENCE)
                 gate = s.brain.evaluate(text, ctx=s.context.latest())
                 ok_cmd = (gate.args.get("addressed", 0) >= min_addressed
                           and gate.confidence >= min_confidence)

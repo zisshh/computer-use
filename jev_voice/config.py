@@ -75,6 +75,10 @@ SAMPLE_RATE = 16000
 # The built-in mic sits on top of the built-in speakers, so it hears your music
 # about 7 dB louder than a desk mic does -- measured, not guessed.
 MIC = os.environ.get("MIC", "")
+
+# Which browser a website opens in. This machine's default http handler is Velja,
+# a URL router -- hand it a URL and the page lands wherever Velja's rules say.
+BROWSER = os.environ.get("BROWSER", "Arc")
 TTS_VOICE = os.environ.get("TTS_VOICE", "Samantha")
 TTS_RATE = int(os.environ.get("TTS_RATE", "210"))
 

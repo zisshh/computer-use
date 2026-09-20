@@ -112,6 +112,34 @@ def open_url(url: str, activate: bool = True) -> bool:
         return bool(workspace.openURL_(ns))
 
 
+
+def open_url_in(app: str, url: str, activate: bool = True) -> bool:
+    """Open `url` in a named application, bypassing the default handler.
+
+    This machine's default http handler is Velja, a URL router -- so handing it a URL
+    means the page lands wherever Velja's rules say, which is not necessarily the
+    browser the user is looking at. Naming the browser removes the guess.
+    """
+    if not AVAILABLE:
+        return subprocess.Popen(["open", "-a", app, url], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL) is not None
+    ns = NSURL.URLWithString_(url)
+    workspace = NSWorkspace.sharedWorkspace()
+    bundle = workspace.URLForApplicationWithBundleIdentifier_(app)
+    if bundle is None:
+        for base in ("/Applications/", "/System/Applications/"):
+            candidate = NSURL.fileURLWithPath_(f"{base}{app}.app")
+            if candidate and candidate.checkResourceIsReachableAndReturnError_(None)[0]:
+                bundle = candidate
+                break
+    if ns is None or bundle is None:
+        return False
+    config = NSWorkspaceOpenConfiguration.configuration()
+    config.setActivates_(activate)
+    workspace.openURLs_withApplicationAtURL_configuration_completionHandler_(
+        [ns], bundle, config, None)
+    return True
+
 # ---------------------------------------------------------------- MediaRemote
 
 _MR: dict[str, object] = {}

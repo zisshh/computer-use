@@ -194,9 +194,10 @@ class Speculator:
 
             # This runs on a background thread, so the gate is free -- and a partial
             # is the most dangerous place to hear a song, because it can act.
-            if not vad.has_speech(pcm):
+            voiced, pcm = vad.gate(pcm)
+            if not voiced:
                 return
-            text = correct(self.transcribe(vad.trim(pcm)))
+            text = correct(self.transcribe(pcm))
             if text and not is_noise(text):
                 self.feed_text(text)
         except Exception:

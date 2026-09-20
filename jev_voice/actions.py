@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, quote_plus
 
-from . import osa
+from . import config, osa
 
 # ---------------------------------------------------------------- apps
 
@@ -35,6 +35,12 @@ ALWAYS_APPS = ["Finder", "Safari", "Terminal", "System Settings", "Notes", "Mess
 _APP_NOISE = re.compile(
     r"(helper|uninstall|updater|crash|reporter|agent|daemon|commandline|"
     r"\(.*\)|setup assistant|diagnostics)", re.I)
+
+# Chrome, Edge and Brave install "Create shortcut…" web pages as real .app bundles under
+# ~/Applications/Chrome Apps.localized/. They look like applications to Spotlight, so
+# "open youtube" matched YouTube.app and launched the page inside Google Chrome -- past
+# the user's actual browser. They are bookmarks; the website route handles them better.
+_PWA_DIRS = re.compile(r"/(Chrome|Edge|Brave|Chromium) Apps", re.I)
 
 
 def _spotlight_apps() -> set[str]:
@@ -63,6 +69,8 @@ def _spotlight_apps() -> set[str]:
             continue
         path = Path(line)
         if path.suffix != ".app" or _APP_NOISE.search(path.stem):
+            continue
+        if _PWA_DIRS.search(line):
             continue
         names.add(path.stem)
     return names
@@ -129,7 +137,8 @@ def open_in_running_browser(url: str) -> str | None:
     the running browser directly puts the tab in the window and space the user is
     actually looking at.
     """
-    for app, dialect in BROWSERS:
+    ordered = sorted(BROWSERS, key=lambda b: b[0] != config.BROWSER)
+    for app, dialect in ordered:
         if not app_running(app):
             continue
         script = (_NEW_TAB_SCRIPTS[dialect]
@@ -534,6 +543,11 @@ def open_site(url: str) -> OpenResult:
     opened = open_in_running_browser(url)
     if opened:
         return OpenResult(opened)
+    # Nothing is running yet. Launch the browser the user named rather than letting the
+    # router pick one -- "open youtube" landing in a different browser than the one they
+    # live in is the same bug as it landing in a Chrome web-app shim.
+    if config.BROWSER and osa.open_url_in(config.BROWSER, url):
+        return OpenResult(config.BROWSER)
     open_url(url)
     return OpenResult()
 
