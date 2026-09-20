@@ -246,7 +246,7 @@ class Brain:
             },
             "engine": {
                 "type": "choice",
-                "instructions": "Assume the user wants to search for something. Which site or search engine should the search run on? If the user does not name a site, choose google.",
+                "instructions": "Assume the user wants to search for something. Which site or search engine should the search run on? The site is often named earlier in the sentence rather than in this fragment -- if `full_command` is present, read it: 'open youtube and search for lofi' means the search runs on youtube. If no site is named anywhere, choose google.",
                 "criteria": {e: None for e in actions.SEARCH_ENGINES},
             },
             "text": {
@@ -345,7 +345,7 @@ class Brain:
     # ------------------------------------------------------------ inference
 
     def evaluate(self, utterance: str, front: str | None = None,
-                 ctx: Any = None) -> Plan:
+                 ctx: Any = None, whole: str | None = None) -> Plan:
         apps = actions.installed_apps()
         cands = text_candidates(utterance)
         state = {
@@ -359,6 +359,12 @@ class Brain:
         if ctx is not None:
             state.update(ctx.as_state())
             state["utterance"] = utterance
+
+        # A compound command is executed a clause at a time, and a clause can lose
+        # what qualified it: "search for lofi" alone went to Google when the user had
+        # said "open youtube and search for lofi".
+        if whole and whole != utterance:
+            state["full_command"] = whole
 
         # The user owns far more pages than a Choice can hold, so code shortlists by
         # fuzzy match and Jev only picks among the plausible few.
@@ -388,9 +394,16 @@ class Brain:
 
         if action == "open_app":
             app, c = ch("app")
-            args["app"] = app
-            conf = min(conf, c)
-        elif action == "open_website":
+            # A site is not an app. "Open youtube" reaches here whenever the site
+            # is named like a program, and answering "that app is not installed"
+            # is never what the user wanted -- the answers for the website
+            # question were already fanned out, so use them.
+            if app == "none" and ans.get("site", {}).get("choice", "other") != "other":
+                action = "open_website"
+            else:
+                args["app"] = app
+                conf = min(conf, c)
+        if action == "open_website":
             site, c = ch("site")
             if site != "other":
                 args["url"] = actions.SITES[site]

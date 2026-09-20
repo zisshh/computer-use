@@ -29,6 +29,7 @@ class VADConfig:
     min_speech_ms: int = int(os.environ.get("VAD_MIN_SPEECH_MS", "250"))
     max_speech_ms: int = int(os.environ.get("VAD_MAX_SPEECH_MS", "12000"))
     pre_roll_ms: int = int(os.environ.get("VAD_PRE_ROLL_MS", "240"))
+    partial_ms: int = int(os.environ.get("SPECULATE_INTERVAL_MS", "480"))
     threshold_mult: float = float(os.environ.get("VAD_THRESHOLD_MULT", "3.5"))
     floor_min: float = float(os.environ.get("VAD_FLOOR_MIN", "0.004"))
 
@@ -42,6 +43,9 @@ class Listener:
         self.paused_until = 0.0
         self.noise = 0.01
         self.on_speech_start = None  # optional callback fired when an utterance begins
+        # Called with the audio so far, every partial_ms, while the user is still
+        # talking. This is what lets a command start before the sentence ends.
+        self.on_partial = None
         self.stream = sd.InputStream(
             samplerate=config.SAMPLE_RATE, channels=1, dtype="float32", blocksize=FRAME,
             device=device, callback=self._cb,
@@ -75,6 +79,7 @@ class Listener:
         loud_run = 0
         silence_ms = 0
         in_speech = False
+        since_partial = 0
         while True:
             # A timeout matters: CPython cannot run a signal handler while the main
             # thread sits in an untimed queue wait, so an untimed get() swallows Ctrl-C.
@@ -100,6 +105,7 @@ class Listener:
                     in_speech = True
                     speech = list(ring)
                     silence_ms = 0
+                    since_partial = 0
                     if self.on_speech_start:
                         try:
                             self.on_speech_start()
@@ -109,6 +115,14 @@ class Listener:
             speech.append(frame)
             silence_ms = 0 if loud else silence_ms + FRAME_MS
             dur = len(speech) * FRAME_MS
+            since_partial += FRAME_MS
+            if self.on_partial and since_partial >= v.partial_ms and dur >= v.min_speech_ms:
+                since_partial = 0
+                try:
+                    # Must not block: the callback hands off to a worker and returns.
+                    self.on_partial(np.concatenate(speech))
+                except Exception:
+                    pass
             if silence_ms >= v.end_silence_ms or dur >= v.max_speech_ms:
                 if dur - silence_ms >= v.min_speech_ms:
                     return np.concatenate(speech)

@@ -25,6 +25,7 @@ from typing import Any
 from . import actions, config, routing
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
+from .streaming import Speculator, normalise, retracted
 from .overlay import NullOverlay
 from .persona import flavor
 from .tts import Speaker
@@ -242,17 +243,34 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
 
 
 def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int = 0,
-           plan: Plan | None = None, ctx: Any = None) -> bool:
-    """Returns False when the user asked to stop."""
+           plan: Plan | None = None, ctx: Any = None,
+           skip: set[str] | None = None, whole: str | None = None) -> bool:
+    """Returns False when the user asked to stop.
+
+    `skip` holds clauses already carried out speculatively while the user was still
+    talking, so a finished sentence never repeats work that is already done.
+    """
+    skip = skip or set()
+    kept = retracted(utterance)
+    if kept != utterance:
+        if not kept:
+            print(f"  ↩ retracted: {utterance}")
+            OVERLAY.set("idle", "Cancelled.", revert_after=2.0)
+            return True
+        utterance = kept
+    if normalise(utterance) in skip:
+        print(f"  ⏩ already done while you were speaking: {utterance}")
+        return True
     OVERLAY.set("thinking", f"{utterance}")
-    plan = plan or brain.evaluate(utterance, ctx=ctx)
+    plan = plan or brain.evaluate(utterance, ctx=ctx, whole=whole)
     print(f"  → {plan}")
     if plan.args.get("compound") and depth == 0:
         parts = split_compound(utterance)
         if len(parts) > 1:
             print(f"  compound: {parts}")
             for p in parts:
-                if not handle(brain, speaker, p, dry, depth=1):
+                if not handle(brain, speaker, p, dry, depth=1, skip=skip,
+                              whole=utterance):
                     return False
                 time.sleep(0.35)  # let the previous app/page come up
             return True
@@ -320,6 +338,12 @@ def run_text(args: argparse.Namespace) -> None:
     handle(brain, speaker, args.text, args.dry_run, ctx=snapshot())
 
 
+def _announce_early(done) -> None:
+    """Show a speculative action, but never speak over the person still talking."""
+    print(f"  ⚡ {done.reply or done.action} (while you were speaking)")
+    OVERLAY.set("done", done.reply or done.action, revert_after=2.0)
+
+
 class Session:
     """Shared runtime for all mic modes."""
 
@@ -336,7 +360,16 @@ class Session:
         self.context = ContextWatcher()
         self.speaker = Speaker(enabled=not args.quiet)
         self.listener = Listener(device=args.device)
+        self.speculator = Speculator(self.brain, self.context, self.stt.transcribe,
+                                     dry=args.dry_run, on_action=_announce_early)
+        self.listener.on_partial = self.speculator.feed_audio
+        self.listener.on_speech_start = self._on_speech
         self.listener.start()
+
+    def _on_speech(self) -> None:
+        """Everything that can be done before the sentence exists, done now."""
+        self.context.prefetch()
+        self.speculator.begin()
 
     def close(self) -> None:
         self.listener.stop()
@@ -348,13 +381,15 @@ class Session:
             return True
         t0 = time.perf_counter()
         text = self.stt.transcribe(pcm)
+        self.speculator.seal()
         stt_ms = int((time.perf_counter() - t0) * 1000)
         if not text:
             print("  (heard nothing)")
             return True
         print(f"🗣  {text}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms)")
         self.listener.pause(0.3)
-        ok = handle(self.brain, self.speaker, text, self.args.dry_run)
+        ok = handle(self.brain, self.speaker, text, self.args.dry_run,
+                    ctx=self.context.latest(), skip=self.speculator.consumed())
         if self.speaker.speaking():
             self.listener.pause(0.9)
         self.listener.drain()
@@ -444,6 +479,8 @@ def run_smart(s: Session) -> None:
     def _on_speech() -> None:
         OVERLAY.set("listening", "Listening…")
         s.context.prefetch()          # gathered while the user is still talking
+        # Armed or not decides whether a prefix may act without naming the assistant.
+        s.speculator.begin(addressed=time.monotonic() < armed["until"])
 
     s.listener.on_speech_start = _on_speech
     while True:
@@ -451,6 +488,7 @@ def run_smart(s: Session) -> None:
         OVERLAY.set("heard", "Transcribing…")
         t0 = time.perf_counter()
         text = s.stt.transcribe(pcm)
+        s.speculator.seal()           # the sentence exists now; stop guessing at it
         stt_ms = int((time.perf_counter() - t0) * 1000)
         if not text:
             OVERLAY.set("idle", IDLE_LABEL, revert_after=0.1)
@@ -486,7 +524,7 @@ def run_smart(s: Session) -> None:
         print(f"🗣  {cmd}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms{tag})")
         s.listener.pause(0.3)
         ok = handle(s.brain, s.speaker, cmd, s.args.dry_run, plan=gate,
-                    ctx=s.context.latest())
+                    ctx=s.context.latest(), skip=s.speculator.consumed())
         if s.speaker.speaking():
             s.listener.pause(0.9)
         s.listener.drain()
