@@ -23,7 +23,7 @@ import numpy as np
 
 from typing import Any
 
-from . import actions, config, routing, vad
+from . import actions, config, route, routing, vad
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
 from .context import media_playing as context_media_playing
@@ -358,7 +358,13 @@ _EMPTY_QUERY = frozenset({"for", "it", "this", "that", "something", "the", "a", 
 
 
 def duck_now() -> None:
-    """Turn the music down for the duration of the sentence, off the audio thread."""
+    """Turn the music down for the duration of the sentence, off the audio thread.
+
+    Pointless on headphones -- the music was never competing with the microphone there,
+    so dipping it only takes the song away from the user for no gain.
+    """
+    if not route.leaks_into_the_room():
+        return
     threading.Thread(target=actions.duck, daemon=True, name="jev-duck").start()
 
 
@@ -555,6 +561,9 @@ def run_smart(s: Session) -> None:
              else " (Caps Lock tap unavailable: no Accessibility/Input Monitoring.)")
           + f"  (Jev {s.brain.model}, whisper {config.WHISPER_MODEL.stem.removeprefix(chr(103)+chr(103)+chr(109)+chr(108)+chr(45))}, voice {s.speaker.engine}:{s.speaker.voice})")
     print(mic_line(s.mic_name))
+    print(f"🔊 Out: {route.describe()}"
+          + ("" if route.leaks_into_the_room()
+             else " — nothing leaks into the mic, so music never gets in the way."))
     print(QUIT_HINT)
     if FEEDBACK == "voice":
         s.speaker.say(flavor("Ready."))
@@ -602,7 +611,11 @@ def run_smart(s: Session) -> None:
                 # likely to be a lyric than a command. Refusing to listen at all was the
                 # wrong answer -- the assistant has to work while music is on. So raise
                 # the bar Jev has to clear instead of closing the door.
-                playing = not followup and context_media_playing()
+                #
+                # And on headphones none of this applies: the song is not in the room, so
+                # anything the microphone hears is a person. Checking costs 0.1ms.
+                playing = (not followup and route.leaks_into_the_room()
+                           and context_media_playing())
                 if WAKE_WHEN_PLAYING and playing:
                     print(f"   ·  {text}   (music playing: say the name first)")
                     OVERLAY.set("idle", f"Say the name: {text}", revert_after=2.0)

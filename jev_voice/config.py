@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +16,26 @@ def _load_dotenv() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        os.environ.setdefault(k.strip(), _value(v))
+
+
+def _value(raw: str) -> str:
+    """The value on the right of `=`, without a trailing comment.
+
+    `MIC="USB Condenser"   # see --list-devices` has to yield `USB Condenser`. Without
+    this the whole tail came through as part of the name, no device ever matched, and
+    the setting silently did nothing -- which is worse than failing, because the startup
+    line still printed a microphone.
+    """
+    raw = raw.strip()
+    if raw[:1] in ("'", '"'):
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        if end != -1:
+            return raw[1:end]
+    # A comment has to be preceded by whitespace, or a secret containing '#' would be
+    # silently cut in half -- the same class of bug this function exists to fix.
+    return re.split(r"\s+#", raw, maxsplit=1)[0].strip().strip('"').strip("'")
 
 
 _load_dotenv()
