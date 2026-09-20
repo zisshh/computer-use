@@ -142,8 +142,17 @@ class WhisperServer:
             pass
 
     def stop(self) -> None:
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+        """Reap the server. It runs in its own session, so it outlives us unless
+        we wait for it -- a terminate() that is never waited on leaves an orphan
+        holding the Metal context and the port.
+        """
+        if not (self.proc and self.proc.poll() is None):
+            return
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=2.0)
+        except Exception:
+            self.proc.kill()
 
     def transcribe(self, pcm: np.ndarray) -> str:
         files = {"file": ("audio.wav", _wav_bytes(pcm), "audio/wav")}

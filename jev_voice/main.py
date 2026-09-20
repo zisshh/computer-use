@@ -13,6 +13,7 @@ import argparse
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -398,6 +399,9 @@ class Session:
 
 # ------------------------------------------------------------------ wake word
 
+QUIT_HINT = ("   quit: Ctrl-C in this terminal, or say \"stop listening\" "
+             "(\"go to sleep\", \"that's all\")")
+
 WAKE_WORDS = [w.strip().lower() for w in os.environ.get("WAKE_WORDS", "alfred,jarvis,alfie,alford,elfred").split(",") if w.strip()]
 FOLLOWUP_SECONDS = float(os.environ.get("FOLLOWUP_SECONDS", "8"))
 _WAKE_RE = re.compile(r"^\W*(?:hey|hi|ok|okay|yo)?\W*(?P<w>" + "|".join(map(re.escape, WAKE_WORDS)) + r")\b\W*", re.I)
@@ -471,6 +475,7 @@ def run_smart(s: Session) -> None:
              else " (Caps Lock tap off: CAPSLOCK=0 in .env.)" if not CAPSLOCK
              else " (Caps Lock tap unavailable: no Accessibility/Input Monitoring.)")
           + f"  (Jev {s.brain.model}, whisper {config.WHISPER_MODEL.stem.removeprefix(chr(103)+chr(103)+chr(109)+chr(108)+chr(45))}, voice {s.speaker.engine}:{s.speaker.voice})")
+    print(QUIT_HINT)
     if FEEDBACK == "voice":
         s.speaker.say(flavor("Ready."))
     else:
@@ -605,6 +610,7 @@ def run_capslock(s: Session) -> None:
                 sys.exit(3)
             perms = request_permissions()
     print(f"⌨️  Hold CAPS LOCK and speak. Tap it to toggle hands-free. (Jev {s.brain.model}, whisper {config.WHISPER_MODEL.stem.removeprefix(chr(103)+chr(103)+chr(109)+chr(108)+chr(45))}, voice {s.speaker.engine}:{s.speaker.voice})")
+    print(QUIT_HINT)
     s.speaker.say(flavor("Ready."))
     while True:
         pcm = done.get()
@@ -613,7 +619,8 @@ def run_capslock(s: Session) -> None:
 
 
 def run_always_on(s: Session) -> None:
-    print(f"🎙  Listening (Jev {s.brain.model}, whisper base.en). Say 'stop listening' to quit.")
+    print(f"🎙  Listening (Jev {s.brain.model}, whisper base.en).")
+    print(QUIT_HINT)
     s.speaker.say(flavor("Ready."))
     s.listener.pause(0.8)
     while True:
@@ -624,6 +631,7 @@ def run_always_on(s: Session) -> None:
 
 def run_ptt(s: Session) -> None:
     print("⏎  Push-to-talk: Enter to start, Enter to stop.")
+    print(QUIT_HINT)
     while True:
         input("  [Enter] to talk… ")
         s.listener.drain()
@@ -646,14 +654,57 @@ def run_ptt(s: Session) -> None:
             break
 
 
+def install_shutdown(holder: dict) -> None:
+    """Make Ctrl-C work while the main thread is inside Cocoa's event loop.
+
+    With the overlay on, the main thread sits in `[NSApp run]` and the voice loop is
+    a background thread. A Python signal handler only executes between bytecodes on
+    the MAIN thread, so it never runs -- Ctrl-C did nothing at all and the window had
+    to be closed, orphaning whisper-server with it.
+
+    `set_wakeup_fd` is the way out: CPython's C-level handler writes the signal
+    number to a pipe the instant the signal lands, whatever the main thread is doing.
+    A watcher thread reads that pipe and tears down from outside the run loop.
+    """
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    signal.set_wakeup_fd(write_fd)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: None)   # the pipe carries the news
+
+    def watch() -> None:
+        os.read(read_fd, 1)
+        print("\n  stopping…")
+        session = holder.get("session")
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+        # The run loop is not ours to unwind safely from here, and everything that
+        # needed closing is closed. os._exit skips buffer flushing, so do it by hand.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(0)
+
+    threading.Thread(target=watch, daemon=True, name="jev-shutdown").start()
+
+
 def run_voice(args: argparse.Namespace) -> None:
     global OVERLAY
     if not args.no_overlay and os.environ.get("OVERLAY", "1") not in ("0", "false", "no"):
         from .overlay import Overlay
         OVERLAY = Overlay()
 
+    holder: dict = {}
+    install_shutdown(holder)
+
     def worker() -> None:
         s = Session(args)
+        holder["session"] = s
         try:
             if args.ptt:
                 run_ptt(s)
