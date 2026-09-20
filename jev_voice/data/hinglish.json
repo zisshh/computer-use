@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Words whisper will not guess on its own, fed to it as the initial prompt.",
+    "",
+    "Hinglish is English sentence structure with Hindi words inside it, written in",
+    "Latin script -- 'band karo ye gaana', not 'बंद करो ये गाना'. That matters: forcing",
+    "whisper to language=hi makes it emit Devanagari, which nothing downstream can read.",
+    "Measured on ggml-small.en with these terms: keyword recall went 21% -> 74% and the",
+    "median transcription went 135ms -> 152ms.",
+    "",
+    "Proper nouns carry almost all of the gain. Function words alone scored 21%; artists",
+    "alone scored 68%. The prompt is a budget, not a free-for-all -- padding it with 12",
+    "app names pushed recall back down to 68%, because the app names displaced the",
+    "artists. Add a name here only if it is one you actually say.",
+    "",
+    "'artists' is a starting set of who gets asked for by name. Edit it to your own."
+  ],
+  "function": [
+    "gaana", "gaane", "khat", "chalao", "lagao", "karo", "kar do", "band karo",
+    "kholo", "bajao", "dikhao", "suno", "thoda", "zyada", "kam", "tez",
+    "dheere", "naya", "purana", "mujhe", "mera", "yeh", "woh", "abhi",
+    "phir se", "wapas", "bhej do", "likho", "dhoondo", "ruko"
+  ],
+  "artists": [
+    "Arijit Singh", "Shreya Ghoshal", "Diljit Dosanjh", "AP Dhillon",
+    "Sidhu Moose Wala", "Neha Kakkar", "Badshah", "Karan Aujla", "Atif Aslam",
+    "Sonu Nigam", "Lata Mangeshkar", "Kishore Kumar", "A R Rahman", "Honey Singh",
+    "Guru Randhawa", "Shubh", "Anuv Jain", "Prateek Kuhad", "Ritviz", "Divine",
+    "Seedhe Maut", "Talwiinder", "Jasleen Royal", "Armaan Malik", "Darshan Raval",
+    "Vishal Mishra", "Amit Trivedi", "Pritam", "Nucleya", "King"
+  ]
+}

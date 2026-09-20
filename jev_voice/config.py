@@ -60,6 +60,11 @@ if JEV_PROVIDER == "openrouter":
 WHISPER_MODEL = Path(os.environ.get("WHISPER_MODEL", ROOT / "models" / "ggml-base.en.bin"))
 WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8178"))
 WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "6"))
+# "en" forces English. A multilingual model also accepts "auto", or a code like
+# "hi". Hinglish is code-switched -- English structure with Hindi words in it --
+# so which of these transcribes "khat" correctly is a measured question, not an
+# obvious one. An .en model ignores this entirely; it cannot hear Hindi at all.
+WHISPER_LANG = os.environ.get("WHISPER_LANG", "en")
 
 # Speech to text: "whisper" (local whisper.cpp, ~100 ms, nothing leaves the machine)
 # or "wispr" (Wispr Flow's REST API -- more accurate on names, but a network round trip

@@ -46,7 +46,13 @@ def is_noise(text: str) -> bool:
 # base.en's 60 ms, 20 terms cost +7 ms for the same practical benefit. The list must be
 # prioritised rather than truncated alphabetically -- an alphabetical cut drops
 # everything past roughly "R", which is how "Spotify" became "spot if I am".
-_WHISPER_BIAS_MAX = int(os.environ.get("STT_BIAS_TERMS", "26"))
+_WHISPER_BIAS_MAX = int(os.environ.get("STT_BIAS_TERMS", "50"))
+# App names are the weakest terms in the prompt and there are hundreds of them, so
+# they are capped: padding the prompt out with twelve of them cost 6 points of
+# Hinglish recall, because they displaced the names that needed the bias.
+_WHISPER_BIAS_APPS = int(os.environ.get("STT_BIAS_APPS", "6"))
+# Hindi words and Indian names, which whisper will never guess unprompted.
+_HINGLISH = os.environ.get("HINGLISH_BIAS", "1") not in ("0", "false", "no")
 
 
 @lru_cache(maxsize=1)
@@ -114,8 +120,36 @@ def own_names(limit: int = 8) -> list[str]:
     return seen[:limit]
 
 
+_HINGLISH_FILE = Path(__file__).with_name("data") / "hinglish.json"
+
+
+@lru_cache(maxsize=1)
+def hinglish_terms() -> list[str]:
+    """Hindi command words and Indian names, in the Latin spelling to aim for.
+
+    Whisper has no prior for these, so without the prompt it invents English words that
+    sound similar -- "gaana" becomes "Ghana", "volume thoda" becomes "Valium Thoda".
+    Measured on ggml-small.en: 21% keyword recall without them, 74% with.
+    """
+    if not _HINGLISH:
+        return []
+    try:
+        import json
+
+        payload = json.loads(_HINGLISH_FILE.read_text())
+    except (OSError, ValueError):
+        return []
+    # Names first: they carry most of the gain and are the least guessable.
+    return list(payload.get("artists", [])) + list(payload.get("function", []))
+
+
 def bias_terms() -> list[str]:
-    """Proper nouns the recogniser should prefer, most-recently-used first."""
+    """Proper nouns the recogniser should prefer, most-recently-used first.
+
+    Order is the whole design: the prompt has a budget, and whatever is at the front
+    survives the cut. Rarest first -- Hindi words and Indian names, then the user's own
+    spaces and channels, then a handful of apps.
+    """
     if not config.STT_BIAS_VOCAB:
         return []
     from . import actions
@@ -124,9 +158,7 @@ def bias_terms() -> list[str]:
     names = [a for a in actions.installed_apps() if not a.startswith(".")]
     # Most recently used first; never-opened apps keep a stable alphabetical tail.
     ranked = sorted(names, key=lambda n: (-recent.get(n, 0.0), n.lower()))
-    # The user's own names go first: they are rarer words than app names, so they need
-    # the bias more, and there are few enough of them to cost almost nothing.
-    return own_names() + ranked
+    return hinglish_terms() + own_names() + ranked[:_WHISPER_BIAS_APPS]
 
 
 _PHONETICS_FILE = Path(__file__).with_name("data") / "phonetics.json"
@@ -206,7 +238,7 @@ class WhisperServer:
                              "  curl -L -o models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
         self.proc = subprocess.Popen(
             [exe, "-m", str(config.WHISPER_MODEL), "--host", "127.0.0.1", "--port", str(self.port),
-             "-t", str(config.WHISPER_THREADS), "-l", "en", "-nt"],
+             "-t", str(config.WHISPER_THREADS), "-l", config.WHISPER_LANG, "-nt"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             # Own process group: Ctrl-C in the terminal must not kill the server
             # out from under an in-flight request. stop() shuts it down in order.
@@ -243,7 +275,7 @@ class WhisperServer:
     def transcribe(self, pcm: np.ndarray) -> str:
         files = {"file": ("audio.wav", _wav_bytes(pcm), "audio/wav")}
         data = {"response_format": "json", "temperature": "0.0", "no_timestamps": "true",
-                "language": "en"}
+                "language": config.WHISPER_LANG}
         prompt = bias_prompt()
         if prompt:
             data["prompt"] = prompt

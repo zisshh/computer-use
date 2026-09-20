@@ -2,22 +2,139 @@
   "schema_version": 1,
   "note": "Corrections applied to the transcript before anything reads it. Each rule is a regex matched case-insensitively against the whole utterance. Only add a rule when the wrong word is one the user would essentially never say to their computer, so the correction cannot cost them a real command.",
   "rules": [
-    {"pattern": "\\bdefend(?:s|ed|ing)?\\b(?=.*\\b(me|discord|call|myself|mic)\\b)", "replace": "deafen", "why": "\"deafen\" is heard as \"defend\" almost every time"},
-    {"pattern": "\\b(?:de ?fen|deafen|def in|the fan|defiant)\\b(?=.*\\b(me|discord|call)\\b)", "replace": "deafen"},
-    {"pattern": "\\bun ?defend(?:ed)?\\b", "replace": "undeafen"},
-    {"pattern": "\\bun ?de ?fen\\b", "replace": "undeafen"},
-    {"pattern": "\\bdis ?connect\\b", "replace": "disconnect"},
-    {"pattern": "\\bun ?mute\\b", "replace": "unmute"},
-    {"pattern": "\\bspot ?if ?(?:i|y|ie)(?: am)?\\b", "replace": "Spotify"},
-    {"pattern": "\\bdis ?cord\\b", "replace": "Discord"},
-    {"pattern": "\\bno ?shun\\b", "replace": "Notion"},
-    {"pattern": "\\bob ?sidian\\b", "replace": "Obsidian"},
-    {"pattern": "\\bwhats ?app\\b", "replace": "WhatsApp"},
-    {"pattern": "\\byou ?tube\\b", "replace": "YouTube"},
-    {"pattern": "\\bin ?sta ?gram\\b", "replace": "Instagram"},
-    {"pattern": "\\bghost ?y\\b", "replace": "Ghostty"},
-    {"pattern": "\\breal ?s\\b(?=.*\\b(instagram|insta)\\b)", "replace": "reels"},
-    {"pattern": "\\breel ?ton\\b", "replace": "reels on"},
-    {"pattern": "\\bzee ?ro\\b|\\bzero\\b(?=\\s*(hq|server))", "replace": "ziiro"}
+    {
+      "pattern": "\\bdefend(?:s|ed|ing)?\\b(?=.*\\b(me|discord|call|myself|mic)\\b)",
+      "replace": "deafen",
+      "why": "\"deafen\" is heard as \"defend\" almost every time"
+    },
+    {
+      "pattern": "\\b(?:de ?fen|deafen|def in|the fan|defiant)\\b(?=.*\\b(me|discord|call)\\b)",
+      "replace": "deafen"
+    },
+    {
+      "pattern": "\\bun ?defend(?:ed)?\\b",
+      "replace": "undeafen"
+    },
+    {
+      "pattern": "\\bun ?de ?fen\\b",
+      "replace": "undeafen"
+    },
+    {
+      "pattern": "\\bdis ?connect\\b",
+      "replace": "disconnect"
+    },
+    {
+      "pattern": "\\bun ?mute\\b",
+      "replace": "unmute"
+    },
+    {
+      "pattern": "\\bspot ?if ?(?:i|y|ie)(?: am)?\\b",
+      "replace": "Spotify"
+    },
+    {
+      "pattern": "\\bdis ?cord\\b",
+      "replace": "Discord"
+    },
+    {
+      "pattern": "\\bno ?shun\\b",
+      "replace": "Notion"
+    },
+    {
+      "pattern": "\\bob ?sidian\\b",
+      "replace": "Obsidian"
+    },
+    {
+      "pattern": "\\bwhats ?app\\b",
+      "replace": "WhatsApp"
+    },
+    {
+      "pattern": "\\byou ?tube\\b",
+      "replace": "YouTube"
+    },
+    {
+      "pattern": "\\bin ?sta ?gram\\b",
+      "replace": "Instagram"
+    },
+    {
+      "pattern": "\\bghost ?y\\b",
+      "replace": "Ghostty"
+    },
+    {
+      "pattern": "\\breal ?s\\b(?=.*\\b(instagram|insta)\\b)",
+      "replace": "reels"
+    },
+    {
+      "pattern": "\\breel ?ton\\b",
+      "replace": "reels on"
+    },
+    {
+      "pattern": "\\bzee ?ro\\b|\\bzero\\b(?=\\s*(hq|server))",
+      "replace": "ziiro"
+    },
+    {
+      "pattern": "\\bg(?:h)?ana\\b",
+      "replace": "gaana",
+      "why": "\"gaana\" (song) comes back as \"Ghana\" or \"Gana\""
+    },
+    {
+      "pattern": "\\bva?lium\\b(?=.*\\b(up|down|kam|zyada|thoda)\\b)",
+      "replace": "volume",
+      "why": "\"volume thoda\" comes back as \"Valium Thoda\""
+    },
+    {
+      "pattern": "\\b(volume|brightness|sound|awaaz)(\\s+\\w+)?\\s+kaam\\b",
+      "replace": "\\1\\2 kam",
+      "why": "kaam = work, kam = less; only the second is a command"
+    },
+    {
+      "pattern": "\\blikna\\b",
+      "replace": "likhna",
+      "why": "likhna = to write"
+    },
+    {
+      "pattern": "\\bcut\\b(?=.*\\b(likhna|likho|bhejo)\\b)",
+      "replace": "khat",
+      "why": "\"khat\" (letter) is heard as \"cut\" next to a writing verb"
+    },
+    {
+      "pattern": "\\bchal(?:e|a)o\\b",
+      "replace": "chalao"
+    },
+    {
+      "pattern": "\\bla ?ga ?o\\b",
+      "replace": "lagao"
+    },
+    {
+      "pattern": "\\bband ?karo\\b",
+      "replace": "band karo"
+    },
+    {
+      "pattern": "\\bni ?ha ?ka ?kkad?\\b|\\bneha kakkad\\b",
+      "replace": "Neha Kakkar"
+    },
+    {
+      "pattern": "\\bar(?:i|a)j(?:i|ee)+t\\b",
+      "replace": "Arijit"
+    },
+    {
+      "pattern": "\\bd(?:i|e) ?la ?j(?:i|ee)t\\b",
+      "replace": "Diljit"
+    },
+    {
+      "pattern": "\\bshr(?:i|e) ?a?d?ho ?shal\\b|\\bshreya d?ghoshal\\b",
+      "replace": "Shreya Ghoshal"
+    },
+    {
+      "pattern": "\\bdhil(?:u|o)n\\b",
+      "replace": "Dhillon"
+    },
+    {
+      "pattern": "\\bmoose ?wala\\b",
+      "replace": "Moose Wala"
+    },
+    {
+      "pattern": "\\bspotif(?:y)?e\\b",
+      "replace": "Spotify"
+    }
   ]
 }
