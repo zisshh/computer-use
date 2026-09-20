@@ -4,3 +4,4 @@ models/*.bin
 __pycache__/
 *.pyc
 recordings/
+.omc/

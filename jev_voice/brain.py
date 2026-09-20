@@ -22,10 +22,14 @@ ACTIONS: dict[str, str] = {
     "web_search": "Search for something on the web or on a specific site: Google it, look it up, find videos of, search YouTube for, search Amazon for",
     "type_text": "Type, write, dictate, or enter some text into whatever is currently focused",
     "new_item": "Create something new inside an app: a new note, document, file, tab, window, message, email, or page (for example 'new note', 'open a new note in the notes app', 'make a new note called groceries', 'new document')",
+    "open_entity": "Open one of the user's OWN named things: a Notion page, database or dashboard, a browser space, or a saved playlist (for example 'open my ziiro HQ dashboard', 'open the DBMS lab page', 'switch to my chill space'). Candidates are listed in `entities`. Prefer this over open_app or open_website whenever the user names something personal that appears in `entities`.",
+    "discord_voice": "Control Discord voice: join or connect to a voice channel, leave or disconnect from the call, mute or unmute the microphone, deafen or undeafen, or say what the current voice state is (for example 'connect to the journal voice channel', 'mute me', 'leave the call', 'am I muted').",
+    "close_app": "Quit, close, or exit an entire named application (for example 'quit spotify', 'close chrome', 'exit slack'). Use this whenever an application is named, even if the user says 'close'. Closing a tab or a window is not this.",
+    "play_track": "Play a specific named song, artist, album, or playlist (for example 'play until I found you', 'play taylor swift on spotify'). Use this when a name is given; bare play/pause with no name is `media`.",
     "shortcut": "Press a single key or keyboard shortcut: enter, escape, tab, copy, paste, undo, save, select all, new tab, close tab, reload, go back, quit the app, switch app, and similar",
     "scroll": "Scroll the current page or document up or down, to the top or bottom",
     "volume": "Change the system sound volume: louder, quieter, mute, unmute, max",
-    "media": "Control music or video playback: play, pause, resume, next track, previous track, skip",
+    "media": "Control playback of whatever is already playing: pause, resume, stop, next track, previous track, skip. No song, artist or album is named -- if one is, that is `play_track`",
     "screenshot": "Take a screenshot of the screen",
     "open_folder": "Open a folder like Downloads, Desktop, Documents, or the home folder in Finder",
     "system": "System-level action: lock the screen, put the display to sleep, show the desktop, toggle dark mode, empty the trash",
@@ -55,7 +59,7 @@ SHORTCUT_CRITERIA: dict[str, str] = {
     "new_tab": "open a new browser tab",
     "close_tab_or_window": "close the current tab or window",
     "reopen_closed_tab": "reopen the last closed tab",
-    "quit_app": "quit / exit the current application entirely",
+    "quit_app": "quit the CURRENT frontmost application, used only when no application is named ('quit this app', 'quit out of here')",
     "minimize_window": "minimize the window",
     "hide_app": "hide the current app",
     "fullscreen": "toggle full screen",
@@ -81,10 +85,16 @@ SHORTCUT_CRITERIA: dict[str, str] = {
 # regexes that peel the payload text off a spoken command
 _TEXT_PATTERNS = [
     r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:type|write|enter|dictate|input|put|insert|say|send|text|paste)(?:\s+in|\s+out|\s+the\s+words?|\s+the\s+text|\s+this|\s+that)?[:,]?\s+(?P<t>.+)$",
+    r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:play|put\s+on|queue|start)(?:\s+(?:me|us))?(?:\s+the\s+(?:song|track|album|playlist))?[:,]?\s+(?P<t>.+)$",
     r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:search|google|look\s*up|find|look\s+for|show\s+me|pull\s+up)(?:\s+(?:on|in)\s+\w+(?:\s+\w+)?)?(?:\s+for)?[:,]?\s+(?P<t>.+)$",
     r"^.*?\b(?:for|about|of|on)\s+(?P<t>.+)$",
     r"[\"“'](?P<t>[^\"”']+)[\"”']",
 ]
+# "play until i found you on spotify" -> the payload is the title, not the service.
+_TRAILING_SERVICE = re.compile(
+    r"\s+(?:on|in|from|using)\s+(?:the\s+)?(?:spotify|apple\s*music|itunes|music|youtube(?:\s*music)?|soundcloud|tidal)\s*[.!?]?$",
+    re.I,
+)
 _TITLE = re.compile(r"\b(?:called|titled|named|labeled|that says|saying|with the title)\s+(?P<t>.+)$", re.I)
 _TRAILING_IN_APP = re.compile(r"\s+(?:in|into|inside|on)\s+(?:the\s+)?(?:[A-Z][\w.]*|notes|chrome|cursor|safari|slack|mail|messages|terminal|finder)(?:\s+app)?\s*[.!?]?$")
 _TRAILING_SUBMIT = re.compile(
@@ -96,6 +106,7 @@ _SPLIT_COMPOUND = re.compile(r"\s*(?:,\s*)?\b(?:and then|then|and also|and)\b\s*
 def _clean(s: str) -> str:
     s = s.strip().strip('"“”\'')
     s = _TRAILING_SUBMIT.sub("", s).strip()
+    s = _TRAILING_SERVICE.sub("", s).strip()
     return s.rstrip(" .").strip()
 
 
@@ -157,12 +168,32 @@ class Plan:
         return f"{self.action}({a})  conf={self.confidence:.2f}  {self.latency_ms}ms"
 
 
+def _entity_from(shortlist: list, key: str):
+    """Map an `eN` answer back to the entity code put in front of the model."""
+    if not key or not key.startswith("e") or not key[1:].isdigit():
+        return None
+    index = int(key[1:])
+    return shortlist[index] if 0 <= index < len(shortlist) else None
+
+
+def shortlist_entities(utterance: str, k: int = 12):
+    """The user's own things that this utterance might name. Empty on any failure."""
+    try:
+        from . import catalog, routing
+
+        return catalog.shortlist(utterance, catalog.load(), k=k,
+                                 kinds=routing.entity_kinds_for(utterance))
+    except Exception:
+        return []
+
+
 class Brain:
     def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
-        self.api_key = api_key or config.TYPESAFE_API_KEY
+        self.api_key = api_key or config.JEV_API_KEY
         if not self.api_key:
-            raise SystemExit("TYPESAFE_API_KEY is not set (put it in .env)")
+            raise SystemExit(f"{config.JEV_KEY_VAR} is not set (put it in .env)")
         self.model = model or config.JEV_MODEL
+        self._shortlist: list = []
         self.http = httpx.Client(
             timeout=15.0,
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -170,13 +201,18 @@ class Brain:
         )
         # Keep the TCP+TLS connection warm so the first real command is fast.
         try:
-            self.http.get("https://api.typesafe.ai/v1/models")
+            self.http.get(config.JEV_WARMUP_URL, timeout=4.0)
         except Exception:
             pass
 
     # ------------------------------------------------------------ questions
 
-    def _questions(self, cands: dict[str, str], apps: list[str]) -> dict[str, Any]:
+    def _entity(self, key: str):
+        """The entity behind an `eN` answer, or None when the model chose 'none'."""
+        return _entity_from(self._shortlist, key)
+
+    def _questions(self, cands: dict[str, str], apps: list[str],
+                   entities: dict[str, str] | None = None) -> dict[str, Any]:
         q: dict[str, Any] = {
             "action": {
                 "type": "choice",
@@ -195,8 +231,13 @@ class Brain:
             },
             "app": {
                 "type": "choice",
-                "instructions": "Assume the user wants to open or switch to an application. Which installed application in `apps` do they mean? Match on meaning: 'chrome' means Google Chrome, 'settings' means System Settings, 'browser' means the default browser. Choose `none` if no listed app matches.",
+                "instructions": "Assume the user names an application -- to open it, switch to it, quit it, or act inside it. Which installed application in `apps` do they mean? Match on meaning: 'chrome' means Google Chrome, 'settings' means System Settings, 'browser' means the default browser. Choose `none` if no listed app matches.",
                 "criteria": {**{a: None for a in apps}, "none": "No listed application matches what the user said"},
+            },
+            "entity": {
+                "type": "choice",
+                "instructions": "Assume the user named one of their own pages, databases, spaces or playlists. `entities` lists the closest matches found in their own data, already ranked. Which one do they mean? Choose `none` when the utterance is not about any of them.",
+                "criteria": {**(entities or {}), "none": "None of these is what the user meant"},
             },
             "site": {
                 "type": "choice",
@@ -253,6 +294,36 @@ class Brain:
                 "instructions": "Assume the user wants to change the volume. What change?",
                 "criteria": {"up": "louder / turn it up", "down": "quieter / turn it down", "mute": "mute / silence", "unmute": "unmute / sound back on", "max": "maximum / all the way up", "half": "medium / half volume"},
             },
+            "music_service": {
+                "type": "choice",
+                "instructions": "Assume the user wants a specific named song, artist or album played. Which service should it play on? If `current_tab` in the state is a video or music site (is_media_player is true), the user almost certainly means that tab -- choose youtube. If they name a service, obey them. Otherwise choose spotify.",
+                "criteria": {
+                    "spotify": "Spotify, the desktop app",
+                    "apple_music": "Apple Music / the Music app",
+                    "youtube": "YouTube in the browser -- choose this when `current_tab` is already a YouTube or other video page, or when the user names YouTube",
+                },
+            },
+            "media_target": {
+                "type": "choice",
+                "instructions": "Assume the user wants to control playback that is already going (pause, resume, skip). Which player do they mean? Look at `now_playing` and `current_tab` in the state: if a browser tab is a video or music page, that is usually the one they can see and mean.",
+                "criteria": {
+                    "current_tab": "the video or music page open in the browser",
+                    "desktop_player": "a desktop music app such as Spotify or Music",
+                },
+            },
+            "voice_op": {
+                "type": "choice",
+                "instructions": "Assume the user is talking about a Discord voice call. What do they want done?",
+                "criteria": {
+                    "join": "join / connect to / hop into a named voice channel",
+                    "leave": "leave / disconnect / hang up the voice call",
+                    "mute": "mute the microphone",
+                    "unmute": "unmute the microphone",
+                    "deafen": "deafen -- stop hearing everyone",
+                    "undeafen": "undeafen -- start hearing again",
+                    "status": "just report the current voice state",
+                },
+            },
             "media_op": {
                 "type": "choice",
                 "instructions": "Assume the user wants to control playback. What?",
@@ -273,7 +344,8 @@ class Brain:
 
     # ------------------------------------------------------------ inference
 
-    def evaluate(self, utterance: str, front: str | None = None) -> Plan:
+    def evaluate(self, utterance: str, front: str | None = None,
+                 ctx: Any = None) -> Plan:
         apps = actions.installed_apps()
         cands = text_candidates(utterance)
         state = {
@@ -282,9 +354,23 @@ class Brain:
             "apps": apps,
             "candidates": cands,
         }
-        payload = {"state": state, "model": self.model, "questions": self._questions(cands, apps)}
+        # What is on screen decides what the same words mean: "play X" belongs to a
+        # focused YouTube tab, not to Spotify, and "close it" needs to know what "it" is.
+        if ctx is not None:
+            state.update(ctx.as_state())
+            state["utterance"] = utterance
+
+        # The user owns far more pages than a Choice can hold, so code shortlists by
+        # fuzzy match and Jev only picks among the plausible few.
+        self._shortlist = shortlist_entities(utterance)
+        entity_criteria = {f"e{i}": e.as_criterion()
+                           for i, e in enumerate(self._shortlist)}
+        if entity_criteria:
+            state["entities"] = {k: v for k, v in entity_criteria.items()}
+        payload = {"state": state, "model": self.model,
+                   "questions": self._questions(cands, apps, entity_criteria)}
         t0 = time.perf_counter()
-        r = self.http.post(config.TYPESAFE_URL, json=payload)
+        r = self.http.post(config.JEV_URL, json=payload)
         r.raise_for_status()
         data = r.json()
         ms = int((time.perf_counter() - t0) * 1000)
@@ -333,6 +419,42 @@ class Brain:
             if float(ans["has_title"]["noul"]) > config.YES:
                 tkey, _ = ch("text")
                 args["title"] = cands.get(tkey, "")
+        elif action == "open_entity":
+            key, c = ch("entity")
+            chosen = self._entity(key)
+            if chosen is None:
+                action = "none"
+            else:
+                args["entity"] = chosen.name
+                args["kind"] = chosen.kind
+                args["target"] = chosen.target
+                args["entity_app"] = chosen.app
+                conf = min(conf, c)
+        elif action == "discord_voice":
+            op, c = ch("voice_op")
+            args["op"] = op
+            conf = min(conf, c)
+            if op == "join":
+                key, kc = ch("entity")
+                chosen = self._entity(key)
+                if chosen is not None and chosen.kind == "discord_voice_channel":
+                    args["channel"] = chosen.name
+                    conf = min(conf, kc)
+                else:
+                    from . import routing
+
+                    tkey, _tc = ch("text")
+                    spoken = cands.get(tkey, "") or utterance
+                    args["channel"] = routing.entity_name_from(spoken) or spoken
+        elif action == "close_app":
+            app, c = ch("app")
+            args["app"] = app
+            conf = min(conf, c)
+        elif action == "play_track":
+            tkey, c = ch("text")
+            args["query"] = cands.get(tkey, utterance)
+            args["service"], _ = ch("music_service")
+            conf = min(conf, c)
         elif action == "shortcut":
             s, c = ch("shortcut")
             args["shortcut"] = s
@@ -349,6 +471,7 @@ class Brain:
         elif action == "media":
             op, c = ch("media_op")
             args["op"] = op
+            args["target"], _ = ch("media_target")
             conf = min(conf, c)
         elif action == "open_folder":
             f, c = ch("folder")

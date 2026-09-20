@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "kind_to_app": {
+    "voice_channel": [
+      "Discord"
+    ],
+    "text_channel": [
+      "Discord"
+    ],
+    "server": [
+      "Discord"
+    ],
+    "guild": [
+      "Discord"
+    ],
+    "page": [
+      "Notion"
+    ],
+    "dashboard": [
+      "Notion"
+    ],
+    "database": [
+      "Notion"
+    ],
+    "doc": [
+      "Notion"
+    ],
+    "note": [
+      "Obsidian",
+      "Notion"
+    ],
+    "space": [
+      "Arc"
+    ],
+    "playlist": [
+      "Spotify"
+    ],
+    "album": [
+      "Spotify"
+    ],
+    "song": [
+      "Spotify",
+      "Arc"
+    ],
+    "track": [
+      "Spotify"
+    ],
+    "chat": [
+      "WhatsApp",
+      "Discord"
+    ],
+    "terminal": [
+      "Ghostty"
+    ]
+  },
+  "kind_words": {
+    "voice_channel": [
+      "voice channel",
+      "vc",
+      "voice chat",
+      "call channel"
+    ],
+    "text_channel": [
+      "channel",
+      "text channel"
+    ],
+    "server": [
+      "server",
+      "guild",
+      "discord server"
+    ],
+    "page": [
+      "page",
+      "notion page"
+    ],
+    "dashboard": [
+      "dashboard",
+      "hq"
+    ],
+    "database": [
+      "database",
+      "db",
+      "table"
+    ],
+    "space": [
+      "space",
+      "arc space"
+    ],
+    "playlist": [
+      "playlist"
+    ],
+    "album": [
+      "album"
+    ],
+    "note": [
+      "note"
+    ]
+  },
+  "media_precedence": [
+    "named_service",
+    "deixis",
+    "frontmost_media_owner",
+    "now_playing_owner",
+    "default_spotify"
+  ],
+  "service_words": {
+    "spotify": [
+      "spotify",
+      "on spotify"
+    ],
+    "youtube": [
+      "youtube",
+      "yt",
+      "on youtube"
+    ],
+    "apple_music": [
+      "apple music",
+      "music app",
+      "itunes"
+    ]
+  },
+  "deixis_words": [
+    "this",
+    "this tab",
+    "this one",
+    "this video",
+    "this song",
+    "here",
+    "the current",
+    "current tab",
+    "that video",
+    "what's playing",
+    "whats playing",
+    "the one that's open",
+    "on screen"
+  ],
+  "close_vs_quit": {
+    "Arc": {
+      "close": "tab",
+      "quit": "app"
+    },
+    "Notion": {
+      "close": "tab",
+      "quit": "app"
+    },
+    "Discord": {
+      "close": "window",
+      "quit": "app",
+      "confirm_quit": true
+    },
+    "Spotify": {
+      "close": "window",
+      "quit": "app",
+      "confirm_quit": true
+    },
+    "default": {
+      "close": "window",
+      "quit": "app"
+    }
+  },
+  "confirm_required": [
+    "quit_app_while_in_call",
+    "quit_app_while_playing",
+    "send_message"
+  ],
+  "site_is_not_an_app": [
+    "youtube",
+    "google",
+    "gmail",
+    "github",
+    "twitter",
+    "x",
+    "reddit",
+    "instagram",
+    "linkedin",
+    "chatgpt",
+    "claude",
+    "perplexity",
+    "amazon",
+    "netflix",
+    "maps",
+    "drive",
+    "calendar",
+    "stackoverflow",
+    "wikipedia",
+    "hackernews",
+    "producthunt"
+  ],
+  "kind_to_entity_kinds": {
+    "voice_channel": [
+      "discord_voice_channel"
+    ],
+    "text_channel": [
+      "discord_text_channel"
+    ],
+    "server": [
+      "discord_server"
+    ],
+    "guild": [
+      "discord_server"
+    ],
+    "page": [
+      "notion_page",
+      "notion_database"
+    ],
+    "dashboard": [
+      "notion_page",
+      "notion_database"
+    ],
+    "doc": [
+      "notion_page"
+    ],
+    "database": [
+      "notion_database"
+    ],
+    "space": [
+      "arc_space"
+    ],
+    "playlist": [
+      "spotify_playlist"
+    ],
+    "album": [
+      "spotify_playlist"
+    ]
+  },
+  "name_lead_words": [
+    "connect to",
+    "connect",
+    "join",
+    "hop into",
+    "hop in",
+    "jump into",
+    "go to",
+    "goto",
+    "switch to",
+    "move to",
+    "open up",
+    "open",
+    "take me to",
+    "get me into",
+    "put me in",
+    "the",
+    "my",
+    "a",
+    "an"
+  ],
+  "name_trail_words": [
+    "voice channel",
+    "voice chat",
+    "text channel",
+    "channel",
+    "vc",
+    "server",
+    "guild",
+    "space",
+    "page",
+    "dashboard",
+    "playlist",
+    "please",
+    "now"
+  ],
+  "quit_words": [
+    "quit",
+    "kill",
+    "exit",
+    "shut down",
+    "shutdown",
+    "terminate",
+    "force quit"
+  ],
+  "override_words": [
+    "anyway",
+    "do it anyway",
+    "i know",
+    "yes really"
+  ]
+}

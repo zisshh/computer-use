@@ -20,8 +20,11 @@ import time
 
 import numpy as np
 
-from . import actions, config
+from typing import Any
+
+from . import actions, config, routing
 from .brain import Brain, Plan, split_compound
+from .context import ContextWatcher
 from .overlay import NullOverlay
 from .persona import flavor
 from .tts import Speaker
@@ -34,6 +37,8 @@ SOUND_FAIL = "/System/Library/Sounds/Basso.aiff"
 SOUND_DONE = "/System/Library/Sounds/Glass.aiff"
 # FEEDBACK=ding (default): chime when an action completes, no speech. FEEDBACK=voice: spoken butler replies.
 FEEDBACK = os.environ.get("FEEDBACK", "ding")
+# CAPSLOCK=0: never remap Caps Lock -> F18. No global talk key; wake word and --ptt still work.
+CAPSLOCK = os.environ.get("CAPSLOCK", "1").lower() not in ("0", "false", "no")
 IDLE_LABEL = "Listening"
 
 
@@ -41,10 +46,92 @@ def ding(path: str) -> None:
     subprocess.Popen(["afplay", "-v", "0.4", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def execute(plan: Plan, dry: bool = False) -> str:
+def quit_blocker(app: str) -> str:
+    """A warning when quitting would destroy something live, or '' when it is safe.
+
+    There is no confirmation dialog in a voice loop, so the guard is a sentence: the
+    user re-issues the command with "anyway" and it goes through.
+    """
+    if app == "Discord":
+        try:
+            from .discord import shared
+
+            if shared().running() and shared().voice_state().connected:
+                return "You're in a voice call. Say \"quit discord anyway\" if you mean it."
+        except Exception:
+            return ""
+    if app in ("Spotify", "Music"):
+        from . import context as ctx_mod
+
+        playing = ctx_mod.now_playing()
+        if playing[0] == app and playing[3]:
+            return f"{app} is playing. Say \"quit {app.lower()} anyway\" if you mean it."
+    return ""
+
+
+def discord_voice(op: str, channel: str = "") -> str:
+    """Discord voice ops, each confirmed by reading the voice panel back.
+
+    Discord fails silently -- a deep link to a server you are not in does nothing at
+    all -- so every one of these reports what it actually observed afterwards rather
+    than what it asked for.
+    """
+    from .discord import shared
+
+    client = shared()
+    if not client.running():
+        return "Discord isn't running."
+    if not client.arm(wait=2.0):
+        return "I can't read Discord's controls. Check Accessibility permission."
+
+    if op == "join":
+        if not channel:
+            return "Which voice channel?"
+        state = client.join_voice(channel)
+        if state.connected:
+            return "Connected to " + state.channel + "."
+        names = client.channels().get("voice", [])
+        if not any(channel.casefold() in n.casefold() for n in names):
+            seen = ", ".join(names) or "none"
+            return (f"I can't see a {channel} voice channel in the server that's open. "
+                    f"Visible voice channels: {seen}.")
+        return "I pressed " + channel + " but Discord didn't report a connection."
+    if op == "leave":
+        state = client.disconnect()
+        return "Left the call." if not state.connected else "I couldn't disconnect."
+    if op in ("mute", "unmute"):
+        state = client.set_mute(op == "mute")
+        return "Muted." if state.muted else "Unmuted."
+    if op in ("deafen", "undeafen"):
+        state = client.set_deafen(op == "deafen")
+        return "Deafened." if state.deafened else "Undeafened."
+    return "You're " + client.voice_state().describe() + "."
+
+
+def discord_text_channel(name: str) -> str:
+    """Open a Discord text channel by name, verified through the window title."""
+    from .discord import shared
+
+    client = shared()
+    if not client.running():
+        return "Discord isn't running."
+    client.arm(wait=2.0)
+    element = client.find(
+        lambda r, d, v: d.lower().startswith(name.lower() + " (text channel)"))
+    if element is None or not client.press(element):
+        return f"I can't see a {name} channel in the server that's open."
+    for _ in range(10):
+        time.sleep(0.2)
+        if client.context()[0].casefold() == name.casefold():
+            return "Opened #" + name + "."
+    return "I pressed #" + name + " but Discord didn't switch."
+
+
+def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
     """Run the plan. Returns the short spoken confirmation."""
     a = plan.args
     act = plan.action
+    utterance = plan.utterance
     if act == "none":
         return ""
     if act == "stop":
@@ -70,8 +157,13 @@ def execute(plan: Plan, dry: bool = False) -> str:
         actions.open_app(a["app"])
         return f"Opening {a['app']}."
     if act == "open_website":
-        actions.open_url(a["url"])
-        return f"Opening {a['site'].replace('_', ' ')}."
+        site = a["site"].replace("_", " ")
+        where = actions.open_site(a["url"])
+        if where.switched_space:
+            return f"Switching to {site} in your {where.switched_space} space."
+        if where.reused_tab:
+            return f"Switching to {site}."
+        return f"Opening {site}."
     if act == "web_search":
         actions.web_search(a["engine"], a["query"])
         return f"Searching {a['engine'].replace('_', ' ')} for {a['query']}."
@@ -89,11 +181,58 @@ def execute(plan: Plan, dry: bool = False) -> str:
     if act == "volume":
         return actions.volume(a["op"])
     if act == "media":
+        # A media key goes to whichever app macOS last registered as the player, which
+        # is not necessarily the video the user is looking at. The ladder picks from
+        # what is on screen, and the tab is driven directly when it wins.
+        route = routing.media_route(utterance, ctx, model_target=a.get("target", ""))
+        if route.target == "current_tab":
+            result = actions.tab_media(a["op"])
+            if result and result != "novideo":
+                return {"play": "Playing.", "pause": "Paused."}.get(result, "Done.")
         actions.media(a["op"])
         return ""
     if act == "screenshot":
         actions.screenshot()
         return "Screenshot saved to the desktop."
+    if act == "discord_voice":
+        return discord_voice(a.get("op", "status"), a.get("channel", ""))
+    if act == "open_entity":
+        kind, target = a.get("kind", ""), a.get("target", "")
+        if kind == "discord_voice_channel":
+            return discord_voice("join", target)
+        if kind == "discord_text_channel":
+            return discord_text_channel(target)
+        if kind == "discord_server":
+            return f"You are already in {target}." \
+                if actions.app_running("Discord") else "Discord isn't running."
+        if kind == "arc_space":
+            return ("Switching to " + target + "." if actions.switch_arc_space(target)
+                    else "I could not find the " + target + " space.")
+        if kind == "spotify_playlist":
+            return actions.play_spotify_uri(target, a.get("entity", "that playlist"))
+        actions.open_entity_url(target)
+        return "Opening " + a.get("entity", "it") + "."
+    if act == "close_app":
+        app = a["app"]
+        if app == "none":
+            return "I don't see that app."
+        if not actions.app_running(app):
+            return f"{app} isn't running."
+        if not routing.means_quit(utterance):
+            # "Close it" is reversible; quitting is not. Take the smaller action.
+            ok = actions.close_app_window(app)
+            return (f"Closed {app}'s window -- it's still running."
+                    if ok else f"I couldn't close {app}'s window.")
+        blocker = quit_blocker(app)
+        if blocker and not routing.overridden(utterance):
+            return blocker
+        ok = actions.quit_named_app(app)
+        return f"Quitting {app}." if ok else f"I couldn't quit {app}."
+    if act == "play_track":
+        route = routing.media_route(utterance, ctx, model_service=a.get("service", ""))
+        if route.service == "youtube":
+            return actions.play_on_youtube(a["query"])
+        return actions.play_named_track(a["query"], route.service)
     if act == "open_folder":
         actions.open_folder(a["folder"])
         return f"Opening {a['folder']}."
@@ -102,10 +241,11 @@ def execute(plan: Plan, dry: bool = False) -> str:
     return ""
 
 
-def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int = 0, plan: Plan | None = None) -> bool:
+def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int = 0,
+           plan: Plan | None = None, ctx: Any = None) -> bool:
     """Returns False when the user asked to stop."""
     OVERLAY.set("thinking", f"{utterance}")
-    plan = plan or brain.evaluate(utterance)
+    plan = plan or brain.evaluate(utterance, ctx=ctx)
     print(f"  → {plan}")
     if plan.args.get("compound") and depth == 0:
         parts = split_compound(utterance)
@@ -117,7 +257,7 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
                 time.sleep(0.35)  # let the previous app/page come up
             return True
     try:
-        reply = execute(plan, dry)
+        reply = execute(plan, dry, ctx=ctx)
     except Exception as e:  # noqa: BLE001
         reply = "That failed."
         print(f"  ! {e}")
@@ -162,6 +302,9 @@ def describe(plan: Plan) -> str:
         "scroll": lambda: f"Scroll {a.get('direction')} ({a.get('amount')})",
         "volume": lambda: f"Volume {a.get('op')}",
         "media": lambda: f"Media {a.get('op', '').replace('_', '/')}",
+        "close_app": lambda: f"Quit {a.get('app')}",
+        "open_entity": lambda: f"Open “{a.get('entity')}” in {a.get('entity_app')}",
+        "play_track": lambda: f"Play “{a.get('query')}”",
         "screenshot": lambda: "Screenshot",
         "open_folder": lambda: f"Open {a.get('folder')}",
         "system": lambda: f"{a.get('op', '').replace('_', ' ').capitalize()}",
@@ -170,9 +313,11 @@ def describe(plan: Plan) -> str:
 
 
 def run_text(args: argparse.Namespace) -> None:
+    from .context import snapshot
+
     brain = Brain()
     speaker = Speaker(enabled=not args.quiet)
-    handle(brain, speaker, args.text, args.dry_run)
+    handle(brain, speaker, args.text, args.dry_run, ctx=snapshot())
 
 
 class Session:
@@ -180,14 +325,15 @@ class Session:
 
     def __init__(self, args: argparse.Namespace) -> None:
         from .audio import Listener
-        from .stt import WhisperServer
+        from .stt import make_stt
 
         if not actions.accessibility_ok():
             print("⚠ Accessibility permission missing: System Settings → Privacy & Security → Accessibility → add your terminal.")
         self.args = args
-        self.stt = WhisperServer()
+        self.stt = make_stt()
         self.stt.start()
         self.brain = Brain()
+        self.context = ContextWatcher()
         self.speaker = Speaker(enabled=not args.quiet)
         self.listener = Listener(device=args.device)
         self.listener.start()
@@ -226,6 +372,10 @@ _WAKE_ANY = re.compile(r"\W*\b(?:" + "|".join(map(re.escape, WAKE_WORDS)) + r")\
 UNNAMED_COMMANDS = os.environ.get("UNNAMED_COMMANDS", "1") not in ("0", "false", "no")
 UNNAMED_MIN_ADDRESSED = float(os.environ.get("UNNAMED_MIN_ADDRESSED", "0.7"))
 UNNAMED_MIN_CONFIDENCE = float(os.environ.get("UNNAMED_MIN_CONFIDENCE", "0.7"))
+# Inside the follow-up window an utterance is likelier to be a command, but it is
+# still not automatically one: unchecked, half-caught speech ("for me.") got typed.
+FOLLOWUP_MIN_ADDRESSED = float(os.environ.get("FOLLOWUP_MIN_ADDRESSED", "0.5"))
+FOLLOWUP_MIN_CONFIDENCE = float(os.environ.get("FOLLOWUP_MIN_CONFIDENCE", "0.5"))
 
 
 def _fuzzy_wake(word: str) -> bool:
@@ -274,20 +424,28 @@ def run_smart(s: Session) -> None:
         ding(SOUND_START)
         arm(10.0)
 
-    if not capslock_remapped():
-        remap_capslock()
-    tap = CapsLockListener(on_press, lambda: None)
-    caps = tap.start()
+    caps = False
+    if CAPSLOCK:
+        if not capslock_remapped():
+            remap_capslock()
+        tap = CapsLockListener(on_press, lambda: None)
+        caps = tap.start()
     names = ", ".join(w.capitalize() for w in WAKE_WORDS[:2])
     print(f"🎙  Hands-free. Say \"{names.split(', ')[0]}, open chrome\"."
-          + (" Or tap CAPS LOCK then speak." if caps else " (Caps Lock tap unavailable: no Accessibility/Input Monitoring.)")
-          + f"  (Jev {s.brain.model}, whisper base.en, voice {s.speaker.engine}:{s.speaker.voice})")
+          + (" Or tap CAPS LOCK then speak." if caps
+             else " (Caps Lock tap off: CAPSLOCK=0 in .env.)" if not CAPSLOCK
+             else " (Caps Lock tap unavailable: no Accessibility/Input Monitoring.)")
+          + f"  (Jev {s.brain.model}, whisper {config.WHISPER_MODEL.stem.removeprefix(chr(103)+chr(103)+chr(109)+chr(108)+chr(45))}, voice {s.speaker.engine}:{s.speaker.voice})")
     if FEEDBACK == "voice":
         s.speaker.say(flavor("Ready."))
     else:
         ding(SOUND_DONE)
     s.listener.pause(0.8)
-    s.listener.on_speech_start = lambda: OVERLAY.set("listening", "Listening…")
+    def _on_speech() -> None:
+        OVERLAY.set("listening", "Listening…")
+        s.context.prefetch()          # gathered while the user is still talking
+
+    s.listener.on_speech_start = _on_speech
     while True:
         pcm = s.listener.next_utterance()
         OVERLAY.set("heard", "Transcribing…")
@@ -299,22 +457,23 @@ def run_smart(s: Session) -> None:
             continue
         OVERLAY.set("heard", text)
         addressed, cmd = strip_wake(text)
-        if not addressed and time.monotonic() < armed["until"]:
-            addressed, cmd = True, text
+        followup = not addressed and time.monotonic() < armed["until"]
         if not cmd and addressed:        # just the name: acknowledge and wait for the command
             ding(SOUND_START)
             arm(FOLLOWUP_SECONDS)
             continue
         gate = None
         if not addressed:
-            if not UNNAMED_COMMANDS:
+            if not (UNNAMED_COMMANDS or followup):
                 print(f"   ·  {text}   (ignored: no name, stt {stt_ms}ms)")
                 OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
                 continue
             # No name: let Jev judge whether this is a command for the computer at all.
-            gate = s.brain.evaluate(text)
-            ok_cmd = (gate.args.get("addressed", 0) >= UNNAMED_MIN_ADDRESSED
-                      and gate.confidence >= UNNAMED_MIN_CONFIDENCE)
+            min_addressed = FOLLOWUP_MIN_ADDRESSED if followup else UNNAMED_MIN_ADDRESSED
+            min_confidence = FOLLOWUP_MIN_CONFIDENCE if followup else UNNAMED_MIN_CONFIDENCE
+            gate = s.brain.evaluate(text, ctx=s.context.latest())
+            ok_cmd = (gate.args.get("addressed", 0) >= min_addressed
+                      and gate.confidence >= min_confidence)
             if ok_cmd and gate.action == "none":
                 print(f"   ·  {text}   (Jev: none, addressed={gate.args.get('addressed')} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
                 continue
@@ -326,7 +485,8 @@ def run_smart(s: Session) -> None:
         tag = f", addressed={gate.args.get('addressed')}" if gate else ""
         print(f"🗣  {cmd}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms{tag})")
         s.listener.pause(0.3)
-        ok = handle(s.brain, s.speaker, cmd, s.args.dry_run, plan=gate)
+        ok = handle(s.brain, s.speaker, cmd, s.args.dry_run, plan=gate,
+                    ctx=s.context.latest())
         if s.speaker.speaking():
             s.listener.pause(0.9)
         s.listener.drain()
@@ -340,6 +500,10 @@ def run_capslock(s: Session) -> None:
     recording on; the next tap stops it."""
     from .hotkey import CapsLockListener, capslock_remapped, remap_capslock
 
+    if not CAPSLOCK:
+        print("✗ --hold needs the Caps Lock remap, but CAPSLOCK=0 in .env.")
+        print("  Set CAPSLOCK=1 (or run scripts/setup.sh), or use hands-free / --ptt instead.")
+        sys.exit(2)
     if not capslock_remapped():
         remap_capslock()
         if not capslock_remapped():
@@ -402,7 +566,7 @@ def run_capslock(s: Session) -> None:
                 s.speaker.say("Permissions granted. Please restart me.")
                 sys.exit(3)
             perms = request_permissions()
-    print(f"⌨️  Hold CAPS LOCK and speak. Tap it to toggle hands-free. (Jev {s.brain.model}, whisper base.en, voice {s.speaker.engine}:{s.speaker.voice})")
+    print(f"⌨️  Hold CAPS LOCK and speak. Tap it to toggle hands-free. (Jev {s.brain.model}, whisper {config.WHISPER_MODEL.stem.removeprefix(chr(103)+chr(103)+chr(109)+chr(108)+chr(45))}, voice {s.speaker.engine}:{s.speaker.voice})")
     s.speaker.say(flavor("Ready."))
     while True:
         pcm = done.get()
@@ -463,6 +627,10 @@ def run_voice(args: argparse.Namespace) -> None:
                 run_smart(s)
         except KeyboardInterrupt:
             pass
+        except Exception as exc:
+            # Ctrl-C tears down whisper-server first, so an in-flight transcribe
+            # surfaces as ConnectError. One line beats a traceback.
+            print(f"\n✗ {type(exc).__name__}: {exc}")
         finally:
             s.close()
 

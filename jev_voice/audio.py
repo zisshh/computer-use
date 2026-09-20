@@ -1,6 +1,7 @@
 """Microphone capture with energy-based voice activity detection and endpointing."""
 from __future__ import annotations
 
+import os
 import queue
 import time
 from dataclasses import dataclass
@@ -16,13 +17,20 @@ FRAME = config.SAMPLE_RATE * FRAME_MS // 1000
 
 @dataclass
 class VADConfig:
-    start_frames: int = 3          # consecutive loud frames to start
-    end_silence_ms: int = 550      # silence that ends an utterance
-    min_speech_ms: int = 250
-    max_speech_ms: int = 12000
-    pre_roll_ms: int = 240         # audio kept from before speech start
-    threshold_mult: float = 3.5    # loudness over noise floor
-    floor_min: float = 0.004
+    """Endpointing. Tunable from .env because the right values depend on your mic,
+    your room and how long you pause mid-sentence.
+
+    Raise end_silence_ms if sentences get chopped in two ("open up." / "for me.");
+    lower it to shave dead air off every command. Raise threshold_mult if music or
+    background chatter keeps the mic open."""
+
+    start_frames: int = int(os.environ.get("VAD_START_FRAMES", "3"))
+    end_silence_ms: int = int(os.environ.get("VAD_END_SILENCE_MS", "550"))
+    min_speech_ms: int = int(os.environ.get("VAD_MIN_SPEECH_MS", "250"))
+    max_speech_ms: int = int(os.environ.get("VAD_MAX_SPEECH_MS", "12000"))
+    pre_roll_ms: int = int(os.environ.get("VAD_PRE_ROLL_MS", "240"))
+    threshold_mult: float = float(os.environ.get("VAD_THRESHOLD_MULT", "3.5"))
+    floor_min: float = float(os.environ.get("VAD_FLOOR_MIN", "0.004"))
 
 
 class Listener:
@@ -68,7 +76,12 @@ class Listener:
         silence_ms = 0
         in_speech = False
         while True:
-            frame = self.q.get()
+            # A timeout matters: CPython cannot run a signal handler while the main
+            # thread sits in an untimed queue wait, so an untimed get() swallows Ctrl-C.
+            try:
+                frame = self.q.get(timeout=0.2)
+            except queue.Empty:
+                continue
             if time.monotonic() < self.paused_until:
                 ring.clear(); speech.clear(); in_speech = False; loud_run = 0
                 continue

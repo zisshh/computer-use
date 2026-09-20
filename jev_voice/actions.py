@@ -1,13 +1,18 @@
 """macOS execution layer. Everything here is plain code: no model involved."""
 from __future__ import annotations
 
+import json
+import threading
 import os
-import shlex
+import re
 import subprocess
 import time
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
+
+from . import osa
 
 # ---------------------------------------------------------------- apps
 
@@ -66,10 +71,38 @@ def focus_app(name: str, timeout: float = 2.0) -> bool:
     return False
 
 
-def open_url(url: str) -> None:
-    if not url.startswith(("http://", "https://")):
+def open_url(url: str, activate: bool = True) -> None:
+    """Last resort for http: this machine's default handler is a URL router, not a
+    browser, so prefer open_site(). Correct and direct for app schemes.
+    """
+    if "://" not in url:
         url = "https://" + url
-    subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    osa.open_url(url, activate=activate)
+
+
+_NEW_TAB_SCRIPTS: dict[str, str] = {'arc': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to make new tab with properties {URL:"@URL@"}\n  activate\n  return "ok"\nend tell', 'chromium': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to make new tab with properties {URL:"@URL@"}\n  activate\n  return "ok"\nend tell', 'safari': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to set current tab to (make new tab with properties {URL:"@URL@"})\n  activate\n  return "ok"\nend tell'}
+
+
+def open_in_running_browser(url: str) -> str | None:
+    """Open `url` as a new tab in a browser that is already running. Returns its name.
+
+    macOS `open` hands the URL to the default handler, which on this machine is a URL
+    router (Velja), not a browser -- so the page could land anywhere, or nowhere. Asking
+    the running browser directly puts the tab in the window and space the user is
+    actually looking at.
+    """
+    for app, dialect in BROWSERS:
+        if not app_running(app):
+            continue
+        script = (_NEW_TAB_SCRIPTS[dialect]
+                  .replace("@APP@", _as_str(app))
+                  .replace("@URL@", _as_str(url)))
+        try:
+            if _osascript(script) == "ok":
+                return app
+        except RuntimeError:
+            continue
+    return None
 
 
 # ---------------------------------------------------------------- sites / search
@@ -115,18 +148,685 @@ SEARCH_ENGINES: dict[str, str] = {
 }
 
 
-def web_search(engine: str, query: str) -> None:
+def web_search(engine: str, query: str) -> str | None:
+    """Run the search in the browser the user already has open."""
     tpl = SEARCH_ENGINES.get(engine, SEARCH_ENGINES["google"])
-    open_url(tpl.format(q=quote_plus(query)))
+    url = tpl.replace("{q}", quote_plus(query))
+    opened = open_in_running_browser(url)
+    if opened:
+        return opened
+    open_url(url)
+    return None
+
+
+# ---------------------------------------------------------------- app control
+
+def _as_str(value: str) -> str:
+    """Escape a Python string for embedding in an AppleScript string literal."""
+    return value.replace("\\", "\\\\").replace(chr(34), "\\" + chr(34))
+
+
+def _ax_app(name: str):
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+        from ApplicationServices import AXUIElementCreateApplication  # type: ignore
+
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            if str(app.localizedName() or "").casefold() == name.casefold():
+                return AXUIElementCreateApplication(int(app.processIdentifier())), app
+    except Exception:
+        pass
+    return None, None
+
+
+def close_app_window(name: str) -> bool:
+    """Close a named app's front window, leaving the app (and its audio, or its call)
+    running. This is what "close X" should mean; "quit X" is quit_named_app.
+    """
+    element, running = _ax_app(name)
+    if element is None:
+        return False
+    try:
+        from ApplicationServices import (  # type: ignore
+            AXUIElementCopyAttributeValue, AXUIElementPerformAction)
+
+        err, windows = AXUIElementCopyAttributeValue(element, "AXWindows", None)
+        for window in ([] if err else list(windows or [])):
+            err, button = AXUIElementCopyAttributeValue(window, "AXCloseButton", None)
+            if not err and button is not None and AXUIElementPerformAction(button, "AXPress") == 0:
+                return True
+    except Exception:
+        pass
+    return bool(running and running.hide())
+
+
+def hide_app(name: str) -> bool:
+    """Get an app out of the way without closing anything."""
+    _element, running = _ax_app(name)
+    return bool(running and running.hide())
+
+
+def quit_named_app(name: str) -> bool:
+    """Quit a NAMED app.
+
+    Command-Q (SHORTCUTS["quit_app"]) is delivered by System Events to whatever is
+    frontmost, so "quit spotify" spoken from a terminal quit the terminal instead.
+    Addressing the app by name cannot hit the wrong target.
+    """
+    try:
+        _osascript('tell application "' + _as_str(name) + '" to quit')
+        return True
+    except RuntimeError:
+        return False
+
+
+def running_apps(max_age: float = 2.0) -> frozenset[str]:
+    """Names of every app with a dock presence, from NSWorkspace.
+
+    Asking System Events "does process X exist" costs ~150ms per app because it spawns
+    osascript; the whole list costs ~14ms in-process. Callers loop over browsers and
+    players, so this is the difference between 900ms and nothing.
+    """
+    now = time.monotonic()
+    cached = _RUNNING_CACHE.get("at", 0.0)
+    if now - cached < max_age and "names" in _RUNNING_CACHE:
+        return _RUNNING_CACHE["names"]
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+
+        names = frozenset(
+            str(a.localizedName() or "")
+            for a in NSWorkspace.sharedWorkspace().runningApplications()
+            if int(a.activationPolicy()) == 0
+        )
+    except Exception:
+        return frozenset()
+    _RUNNING_CACHE["names"] = names
+    _RUNNING_CACHE["at"] = now
+    return names
+
+
+_RUNNING_CACHE: dict[str, object] = {}
+
+
+def bundle_id_for(name: str) -> str:
+    """Bundle id of a running app, by display name. '' when it is not running.
+
+    Bundle ids are the join key between MediaRemote, the catalogs and the app manifests;
+    display names are ambiguous ("Music" is both an app and a Spotify sidebar item).
+    """
+    key = name.casefold()
+    cached = _BUNDLE_IDS.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+
+        for a in NSWorkspace.sharedWorkspace().runningApplications():
+            if str(a.localizedName() or "").casefold() == key:
+                _BUNDLE_IDS[key] = str(a.bundleIdentifier() or "")
+                return _BUNDLE_IDS[key]
+    except Exception:
+        pass
+    return ""
+
+
+_BUNDLE_IDS: dict[str, str] = {}
+
+
+def app_running(name: str) -> bool:
+    return name in running_apps()
+
+
+# ---------------------------------------------------------------- browser tabs
+
+# Browsers whose open tabs we search before opening a new one. Chromium-family
+# browsers share one dialect; Arc selects a tab object; Safari sets `current tab`.
+#
+# Arc only ever searches its ACTIVE space. Its tabs are grouped into spaces, and
+# selecting a tab in another space drags the browser there -- asking for YouTube
+# should hand you YouTube where you are, not relocate your whole workspace.
+_TAB_SCRIPTS: dict[str, str] = {
+    "chromium": 'tell application "@APP@"\n  repeat with w in windows\n    set i to 0\n    repeat with t in tabs of w\n      set i to i + 1\n      if URL of t contains "@NEEDLE@" then\n        set active tab index of w to i\n        set index of w to 1\n        activate\n        return "ok"\n      end if\n    end repeat\n  end repeat\nend tell\nreturn "no"',
+    "arc": 'tell application "@APP@"\n  repeat with w in windows\n    repeat with t in tabs of (active space of w)\n      if URL of t contains "@NEEDLE@" then\n        select t\n        activate\n        return "ok"\n      end if\n    end repeat\n  end repeat\nend tell\nreturn "no"',
+    "safari": 'tell application "@APP@"\n  repeat with w in windows\n    repeat with t in tabs of w\n      if URL of t contains "@NEEDLE@" then\n        set current tab of w to t\n        set index of w to 1\n        activate\n        return "ok"\n      end if\n    end repeat\n  end repeat\nend tell\nreturn "no"',
+}
+
+BROWSERS: list[tuple[str, str]] = [
+    ("Arc", "arc"),
+    ("Google Chrome", "chromium"),
+    ("Brave Browser", "chromium"),
+    ("Microsoft Edge", "chromium"),
+    ("Vivaldi", "chromium"),
+    ("Safari", "safari"),
+]
+
+
+# One list-returning Apple Event per question. The obvious `repeat with t in tabs`
+# form costs three events per tab -- 1419ms on this 59-tab window, versus 146ms here.
+_TAB_URLS: dict[str, str] = {
+    "arc_space": 'tell application "Arc" to tell front window to return URL of every tab of (active space of it)',
+    "arc_window": 'tell application "Arc" to return URL of every tab of front window',
+    "chromium": 'tell application "@APP@" to return URL of every tab of front window',
+    "safari": 'tell application "@APP@" to return URL of every tab of front window',
+}
+
+_ARC_LOCATIONS = 'tell application "Arc" to return location of every tab of front window'
+
+_SELECT_TAB_SCRIPTS: dict[str, str] = {
+    "arc_space": 'tell application "Arc"\n  tell front window to select tab @N@ of (active space of it)\n  activate\n  return "ok"\nend tell',
+    "arc_window": 'tell application "Arc"\n  tell front window to select tab @N@\n  activate\n  return "ok"\nend tell',
+    "chromium": 'tell application "@APP@"\n  tell front window\n    set active tab index to @N@\n    set index to 1\n  end tell\n  activate\n  return "ok"\nend tell',
+    "safari": 'tell application "@APP@"\n  tell front window to set current tab to tab @N@\n  activate\n  return "ok"\nend tell',
+}
+
+# Arc reports every tab as exactly one of these. Favourites (topApp) are visible from
+# every space, so raising one never moves the user; the others live in one space each.
+_LOCATION_RANK = {"topApp": 0, "pinned": 1, "unpinned": 2}
+
+
+# Hosts whose root immediately redirects into a path, so asking for the bare site and
+# landing on a deep path is still "the homepage".
+REDIRECTING_HOSTS = frozenset({
+    "mail.google.com", "drive.google.com", "docs.google.com", "calendar.google.com",
+    "notion.so", "app.slack.com", "web.whatsapp.com", "teams.microsoft.com",
+    "app.asana.com", "linear.app", "figma.com", "x.com", "twitter.com",
+    "chatgpt.com", "claude.ai", "messenger.com", "discord.com",
+})
+
+
+def split_url(url: str) -> tuple[str, str]:
+    """(host without www, path without leading/trailing slash, query and fragment gone).
+
+    The query has to go: `https://www.youtube.com/?gl=IN` is the homepage, and keeping
+    `?gl=in` as the path made it fail the homepage test.
+    """
+    rest = url.split("://", 1)[-1].split("#", 1)[0]
+    host, _, path = rest.partition("/")
+    return host.removeprefix("www.").lower(), path.split("?", 1)[0].strip("/").lower()
+
+
+def tab_matches(requested: str, tab_url: str) -> bool:
+    """Is `tab_url` the page the user asked for?
+
+    A bare site ("open youtube") means its HOMEPAGE, so it must not match a leftover
+    search-results tab on the same host -- that is how "open youtube" kept landing on an
+    old `youtube.com/results?search_query=lofi hip hop`. A deep link matches its own path.
+    """
+    want_host, want_path = split_url(requested)
+    tab_host, tab_path = split_url(tab_url)
+    if not want_host or want_host != tab_host:
+        return False
+    if not want_path:
+        # Some hosts redirect their root into a path (Gmail -> /mail/u/0), so for those
+        # any page on the host is "the homepage". Elsewhere a bare site means the root.
+        return tab_host in REDIRECTING_HOSTS or tab_path in ("", "index.html")
+    return tab_path.startswith(want_path)
+
+
+@dataclass(frozen=True)
+class OpenResult:
+    """What actually happened when a site was put in front of the user."""
+
+    browser: str = ""
+    reused_tab: bool = False
+    switched_space: str = ""
+
+    def __bool__(self) -> bool:
+        return bool(self.browser)
+
+
+def _tab_list(script: str) -> list[str]:
+    try:
+        return [u.strip() for u in _osascript(script, timeout=10).split(", ") if u.strip()]
+    except RuntimeError:
+        return []
+
+
+def arc_locations() -> list[str]:
+    return _tab_list(_ARC_LOCATIONS)
+
+
+def browser_tab_urls(app: str, dialect: str) -> list[str]:
+    """Every tab URL in the front window, in index order (Arc: the active space)."""
+    key = "arc_space" if app == "Arc" else dialect
+    return _tab_list(_TAB_URLS[key].replace("@APP@", _as_str(app)))
+
+
+def _select(dialect_key: str, app: str, index: int) -> bool:
+    script = (_SELECT_TAB_SCRIPTS[dialect_key]
+              .replace("@APP@", _as_str(app))
+              .replace("@N@", str(index)))
+    try:
+        return _osascript(script, timeout=10) == "ok"
+    except RuntimeError:
+        return False
+
+
+def _focus_arc_tab(url: str) -> OpenResult | None:
+    """Raise an Arc tab for `url`, preferring one that does not move the user.
+
+    Order: the active space first (cheap, and no space change), then the whole window
+    ranked favourite > pinned > unpinned. The window-wide pass is what finds the true
+    homepage: Arc's favourite tabs are NOT in `tabs of <space>`, so the space-only
+    enumeration this replaced could never see them and opened a duplicate every time.
+    """
+    space_urls = _tab_list(_TAB_URLS["arc_space"])
+    index = next((i for i, u in enumerate(space_urls, start=1) if tab_matches(url, u)), None)
+    if index is not None and _select("arc_space", "Arc", index):
+        return OpenResult("Arc", reused_tab=True)
+
+    window_urls = _tab_list(_TAB_URLS["arc_window"])
+    hits = [i for i, u in enumerate(window_urls, start=1) if tab_matches(url, u)]
+    if not hits:
+        return None
+    locations = arc_locations()
+
+    def rank(i: int) -> tuple[int, int]:
+        where = locations[i - 1] if i - 1 < len(locations) else "unpinned"
+        return _LOCATION_RANK.get(where, 3), i
+
+    best = min(hits, key=rank)
+    before = ""
+    if rank(best)[0] != 0:          # only a favourite is guaranteed not to move us
+        try:
+            before = _osascript(
+                'tell application "Arc" to return title of active space of front window')
+        except RuntimeError:
+            before = ""
+    if not _select("arc_window", "Arc", best):
+        return None
+    after = ""
+    if before:
+        try:
+            after = _osascript(
+                'tell application "Arc" to return title of active space of front window')
+        except RuntimeError:
+            after = ""
+    return OpenResult("Arc", reused_tab=True,
+                      switched_space=after if after and after != before else "")
+
+
+def focus_existing_tab(url: str) -> OpenResult | None:
+    """Raise an already-open tab for `url`, in whichever browser has it.
+
+    Matching happens in Python: AppleScript's `contains` cannot tell a site's homepage
+    from a deep link on the same host.
+    """
+    running = running_apps()
+    for app, dialect in BROWSERS:
+        if app not in running:
+            continue
+        if app == "Arc":
+            hit = _focus_arc_tab(url)
+            if hit:
+                return hit
+            continue
+        urls = browser_tab_urls(app, dialect)
+        index = next((i for i, u in enumerate(urls, start=1) if tab_matches(url, u)), None)
+        if index is not None and _select(dialect, app, index):
+            return OpenResult(app, reused_tab=True)
+    return None
+
+
+def open_site(url: str) -> OpenResult:
+    """Put this site in front of the user, in the browser they are already using.
+
+    Order: an already-open tab, then a new tab in the running browser, and only then the
+    system handler -- which on this machine is a URL router, not a browser, so a page
+    sent there can land anywhere.
+    """
+    if "://" not in url:
+        url = "https://" + url
+    found = focus_existing_tab(url)
+    if found:
+        return found
+    opened = open_in_running_browser(url)
+    if opened:
+        return OpenResult(opened)
+    open_url(url)
+    return OpenResult()
+
+
+# ---------------------------------------------------------------- browser javascript
+
+_JS_WRAPPERS = {
+    "arc": 'tell application "@APP@" to tell front window to tell active tab to return execute javascript "@JS@"',
+    "chromium": 'tell application "@APP@" to tell front window to tell active tab to execute javascript "@JS@"',
+    "safari": 'tell application "@APP@" to tell front window to do JavaScript "@JS@" in current tab',
+}
+
+
+def browser_js(script: str, app: str | None = None, timeout: int = 5) -> str | None:
+    """Run JavaScript in the focused tab of a running browser. Returns its value.
+
+    This is how a web player gets controlled without touching the keyboard: the page is
+    already open, so play/pause/next is one function call rather than a guess about which
+    app owns the media keys.
+    """
+    running = running_apps()
+    candidates = [(a, d) for a, d in BROWSERS if (app is None or a == app) and a in running]
+    front = frontmost_app()
+    candidates.sort(key=lambda ad: ad[0] != front)
+    payload = script.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    for name, dialect in candidates:
+        wrapper = _JS_WRAPPERS[dialect].replace("@APP@", _as_str(name)).replace("@JS@", payload)
+        try:
+            # A tab that is still loading blocks the Apple Event until its default 60s
+            # timeout, which would stall the worker thread. Bound it hard.
+            return _osascript(wrapper, timeout=timeout).strip().strip('"')
+        except RuntimeError:
+            continue
+    return None
+
+
+# Picking the element is the whole game: a YouTube /shorts page had three <video>
+# elements where the first was paused with duration 0 and the second was the real
+# 101-second player. Prefer what is already running, then anything loaded with real
+# duration, then the largest thing on the page.
+_PICK_MEDIA = (
+    "var _v=[].slice.call(document.querySelectorAll('video,audio'));"
+    "var _p=_v.filter(function(x){return !x.paused})[0];"
+    "var _r=_v.filter(function(x){return x.readyState>0&&x.duration>1})"
+    ".sort(function(a,b){return b.clientWidth*b.clientHeight-a.clientWidth*a.clientHeight})[0];"
+    "var v=_p||_r||_v[0];"
+)
+
+_TAB_MEDIA_JS = {
+    "play_pause": "(function(){" + _PICK_MEDIA +
+                  "if(!v)return 'novideo';if(v.paused){v.play();return 'play'}"
+                  "v.pause();return 'pause'})()",
+    "play": "(function(){" + _PICK_MEDIA +
+            "if(!v)return 'novideo';v.play();return 'play'})()",
+    "pause": "(function(){" + _PICK_MEDIA +
+             "if(!v)return 'novideo';v.pause();return 'pause'})()",
+    "next": "(function(){var b=document.querySelector('.ytp-next-button');"
+            "if(b){b.click();return 'next'}return 'nonext'})()",
+    "previous": "(function(){var b=document.querySelector('.ytp-prev-button');"
+                "if(b){b.click();return 'prev'}history.back();return 'back'})()",
+}
+
+
+def tab_media(op: str) -> str | None:
+    """play_pause / play / pause / next / previous on the focused tab's player."""
+    js = _TAB_MEDIA_JS.get(op)
+    if not js:
+        return None
+    return browser_js(js)
+
+
+# Arc runs injected JavaScript in an isolated world: window.yt, ytcfg and
+# movie_player.playVideo are all undefined there, and a <script> tag is blocked by
+# YouTube's CSP. Only the DOM and real controls are reachable -- which is enough.
+_YT_RESULTS_READY = (
+    "(function(){return document.readyState+'|'+"
+    "document.querySelectorAll('ytd-video-renderer a#video-title').length})()"
+)
+
+_YT_RESULTS = (
+    "(function(){return [].slice.call("
+    "document.querySelectorAll('ytd-video-renderer a#video-title')).slice(0,5)"
+    ".map(function(x){return ((x.getAttribute('title')||x.textContent||'').trim())"
+    "+'|~|'+(x.getAttribute('href')||'')}).join('|::|')})()"
+)
+
+
+def _wait_for(js: str, ok, timeout: float = 5.0, interval: float = 0.25) -> str:
+    """Poll a page until it answers usefully. Replaces guessing with a fixed sleep."""
+    deadline = time.time() + timeout
+    out = ""
+    while time.time() < deadline:
+        out = browser_js(js) or ""
+        if ok(out):
+            return out
+        time.sleep(interval)
+    return out
+
+
+def youtube_results(limit: int = 5) -> list[tuple[str, str]]:
+    """(title, href) for the top results on the open YouTube results page."""
+    # YouTube keeps serving the OLD document for a moment after a navigation, so
+    # "complete" alone is not enough -- wait until results are actually in the DOM.
+    raw = _wait_for(_YT_RESULTS_READY,
+                    lambda o: o.startswith(("interactive", "complete")) and not o.endswith("|0"),
+                    timeout=8.0, interval=0.2)
+    if not raw or raw.endswith("|0"):
+        return []
+    out = browser_js(_YT_RESULTS) or ""
+    results = []
+    for chunk in out.split("|::|"):
+        title, _, href = chunk.partition("|~|")
+        if title.strip() and href.strip():
+            results.append((title.strip(), href.strip()))
+    return results[:limit]
+
+
+def open_for_search(url: str, host: str) -> None:
+    """Open a throwaway page without disturbing the tabs the user keeps.
+
+    Reusing an existing tab is right for "open youtube" and wrong here: raising a
+    favourite or a pinned tab and then navigating it away destroys something the user
+    parked deliberately, and a pinned tab in another space drags them out of this one.
+    So: reuse the current tab only if it is already on that site, otherwise a new one.
+    """
+    try:
+        current = _osascript(
+            'tell application "Arc" to return URL of active tab of front window', timeout=5)
+    except RuntimeError:
+        current = ""
+    if current and split_url(current)[0] == host:
+        browser_js("location.href=" + repr(url).replace("'", '"') + ";'nav'")
+        return
+    if not open_in_running_browser(url):
+        open_url(url)
+
+
+_YT_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+def youtube_search(query: str, limit: int = 6) -> list[tuple[str, str]]:
+    """(video_id, title) for a YouTube search, fetched over HTTP.
+
+    Rendering the results page in the browser and reading its DOM costs about five
+    seconds, because the wait is YouTube's own client-side render. The same results are
+    in the server HTML in about one second, which is the difference between a command
+    that feels instant and one that feels broken.
+    """
+    try:
+        import httpx
+
+        r = httpx.get("https://www.youtube.com/results",
+                      params={"search_query": query}, timeout=8.0,
+                      headers={"User-Agent": _YT_UA, "Accept-Language": "en-US,en;q=0.9"})
+        r.raise_for_status()
+        match = re.search(r"var ytInitialData = (\{.*?\});</script>", r.text)
+        if not match:
+            return []
+        data = json.loads(match.group(1))
+    except Exception:
+        return []
+
+    out: list[tuple[str, str]] = []
+
+    def walk(node) -> None:
+        if len(out) >= limit:
+            return
+        if isinstance(node, dict):
+            video = node.get("videoRenderer")
+            if isinstance(video, dict) and video.get("videoId"):
+                title = "".join(run.get("text", "")
+                                for run in video.get("title", {}).get("runs", []))
+                out.append((video["videoId"], title.strip()))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    return out[:limit]
+
+
+def _best_match(query: str, titles: list[tuple[str, str]]):
+    """The closest title, with YouTube's own ranking breaking ties.
+
+    Not simply the first result: searching for a song routinely puts a lyrics video, a
+    reaction or an hour-long mix above the track, and the user asked for the track.
+    """
+    from . import catalog
+
+    return max(enumerate(titles), key=lambda it: (catalog.score(query, it[1][1]), -it[0]))[1]
+
+
+def _nudge_play(delay: float = 2.0) -> None:
+    """Press play once the page exists. Navigating to /watch usually autoplays anyway."""
+    def run() -> None:
+        time.sleep(delay)
+        _wait_for(_TAB_MEDIA_JS["play"], lambda o: o == "play", timeout=6.0, interval=0.4)
+
+    threading.Thread(target=run, daemon=True, name="jev-yt-play").start()
+
+
+def play_on_youtube(query: str) -> str:
+    """Play a named song on YouTube, in the browser the user is already in."""
+    hits = youtube_search(query)
+    if hits:
+        video_id, title = _best_match(query, hits)
+        open_for_search("https://www.youtube.com/watch?v=" + video_id, "youtube.com")
+        _nudge_play()
+        return "Playing " + title + " on YouTube."
+
+    # No network, or YouTube changed its HTML: drive the results page in the browser.
+    open_for_search("https://www.youtube.com/results?search_query=" + quote_plus(query),
+                    "youtube.com")
+    results = youtube_results()
+    if not results:
+        return "I couldn't find " + query + " on YouTube."
+    title, href = max(results, key=lambda r: __import__(
+        "jev_voice.catalog", fromlist=["score"]).score(query, r[0]))
+    if not href.startswith("http"):
+        href = "https://www.youtube.com" + href
+    browser_js("location.href=" + repr(href).replace("'", '"') + ";'nav'")
+    _nudge_play()
+    return "Playing " + title + " on YouTube."
+
+
+# ---------------------------------------------------------------- music
+
+def spotify_search_uri(query: str) -> str:
+    return "spotify:search:" + quote(query, safe="")
+
+
+_spotify_token: tuple[str, float] | None = None
+
+
+def _spotify_token_get() -> str | None:
+    """Client-credentials token, cached until it expires."""
+    global _spotify_token
+    cid = os.environ.get("SPOTIFY_CLIENT_ID")
+    secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    if not (cid and secret):
+        return None
+    if _spotify_token and _spotify_token[1] > time.time() + 30:
+        return _spotify_token[0]
+    try:
+        import base64
+
+        import httpx
+
+        auth = base64.b64encode((cid + ":" + secret).encode()).decode()
+        r = httpx.post("https://accounts.spotify.com/api/token",
+                       data={"grant_type": "client_credentials"},
+                       headers={"Authorization": "Basic " + auth}, timeout=6.0)
+        r.raise_for_status()
+        d = r.json()
+        _spotify_token = (d["access_token"], time.time() + float(d.get("expires_in", 3600)))
+        return _spotify_token[0]
+    except Exception:
+        return None
+
+
+SPOTIFY_URI = re.compile(r"^spotify:(track|album|artist|playlist):[A-Za-z0-9]{22}$")
+
+_uri_cache: dict[str, str] = {}
+
+
+def spotify_query(spoken: str) -> str:
+    """Turn "nights by frank ocean" into Spotify's fielded search syntax.
+
+    `track:nights artist:frank ocean` is materially more precise than the same words
+    as free text, which is what made the wrong song come back.
+    """
+    title, sep, artist = spoken.partition(" by ")
+    if sep and title.strip() and artist.strip():
+        return f"track:{title.strip()} artist:{artist.strip()}"
+    return spoken
+
+
+def _spotify_track_uri(query: str) -> str | None:
+    """Spoken name -> track URI. Cached, because this HTTP call is the whole delay."""
+    key = query.casefold()
+    if key in _uri_cache:
+        return _uri_cache[key]
+    token = _spotify_token_get()
+    if not token:
+        return None
+    try:
+        import httpx
+
+        r = httpx.get("https://api.spotify.com/v1/search",
+                      params={"q": spotify_query(query), "type": "track", "limit": 1},
+                      headers={"Authorization": "Bearer " + token}, timeout=6.0)
+        r.raise_for_status()
+        items = r.json().get("tracks", {}).get("items") or []
+        uri = items[0]["uri"] if items else None
+    except Exception:
+        return None
+    if uri and SPOTIFY_URI.match(uri):
+        _uri_cache[key] = uri
+        return uri
+    return None
+
+
+def play_named_track(query: str, service: str = "spotify") -> str:
+    """Play a specific track by name.
+
+    Spotify's AppleScript dictionary has `play track`, but it only accepts a Spotify
+    URI and the app exposes no search command, so turning a spoken title into a URI
+    needs the Web API. With credentials we play the exact track; without them we open
+    the search, rather than silently playing whatever happened to be queued.
+    """
+    if service == "apple_music":
+        try:
+            _osascript('tell application "Music" to play '
+                       '(first track whose name contains "' + _as_str(query) + '")')
+            return "Playing " + query + "."
+        except RuntimeError:
+            return "I couldn't find " + query + " in your library."
+
+    uri = _spotify_track_uri(query)
+    if uri:
+        # `play track` launches Spotify itself, so the old open-then-sleep was pure
+        # added latency. An invalid URI would silently STOP playback instead of
+        # erroring, which is why the shape is checked before it is sent.
+        if play_spotify_uri(uri, query).startswith("Playing"):
+            return "Playing " + query + "."
+    # No credentials means Spotify can only be *searched*, never told to play a named
+    # track. Falling back to YouTube actually plays the song instead of leaving the user
+    # staring at a search result they still have to click.
+    if os.environ.get("PLAY_FALLBACK", "youtube").lower() == "youtube":
+        return (play_on_youtube(query)
+                + " I can't play named songs on Spotify without its API keys.")
+    osa.open_url(spotify_search_uri(query))
+    return "Searching Spotify for " + query + ". Add Spotify API keys to play it outright."
 
 
 # ---------------------------------------------------------------- keyboard
 
-def _osascript(script: str) -> str:
-    out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise RuntimeError(out.stderr.strip())
-    return out.stdout.strip()
+def _osascript(script: str, timeout: int | None = None) -> str:
+    """Run AppleScript in-process. Kept as the single chokepoint for every app call."""
+    return osa.run(script, timeout=timeout)
 
 
 def type_text(text: str) -> None:
@@ -204,22 +904,71 @@ def press(shortcut: str, times: int = 1) -> None:
 
 # ---------------------------------------------------------------- scroll
 
+@lru_cache(maxsize=1)
+def natural_scrolling() -> bool:
+    """True when macOS "natural" scrolling is on (the default), which inverts wheel deltas."""
+    try:
+        out = subprocess.run(["defaults", "read", "-g", "com.apple.swipescrolldirection"],
+                             capture_output=True, text=True, timeout=3.0)
+        return out.stdout.strip() != "0"      # unset or 1 both mean natural
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
+def frontmost_window_center() -> tuple[float, float] | None:
+    """Centre of the frontmost app's topmost window, in points.
+
+    Pure Quartz: no screenshot, no OCR, no accessibility round trip.
+    """
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+        import Quartz  # type: ignore
+
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return None
+        pid = int(app.processIdentifier())
+        options = (Quartz.kCGWindowListOptionOnScreenOnly
+                   | Quartz.kCGWindowListExcludeDesktopElements)
+        for window in Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []:
+            if window.get("kCGWindowOwnerPID") != pid or window.get("kCGWindowLayer") != 0:
+                continue
+            b = window["kCGWindowBounds"]
+            if b["Width"] > 80 and b["Height"] > 80:
+                return float(b["X"]) + float(b["Width"]) / 2, float(b["Y"]) + float(b["Height"]) / 2
+    except Exception:
+        return None
+    return None
+
+
 def scroll(direction: str, amount: str = "page") -> None:
-    """direction: up|down|top|bottom ; amount: little|page|a_lot."""
+    """direction: up|down|top|bottom ; amount: little|page|a_lot.
+
+    A scroll wheel event is delivered to whatever sits under the POINTER, not to the
+    focused app, so scrolling did nothing whenever the cursor happened to rest over
+    another window. Park the pointer over the frontmost window first.
+    """
     if direction in ("top", "bottom"):
-        press("arrow_up" if direction == "top" else "arrow_down")  # focus safety no-op
         _osascript(
             'tell application "System Events" to key code %d using {command down}'
             % (126 if direction == "top" else 125)
         )
         return
     lines = {"little": 5, "page": 15, "a_lot": 40}.get(amount, 15)
-    sign = 1 if direction == "up" else -1
+    # A wheel delta's meaning flips with the "natural scrolling" preference, so a fixed
+    # sign scrolls the wrong way on whichever setting it was not written for.
+    per_tick = 3 if natural_scrolling() else -3
+    sign = per_tick if direction == "down" else -per_tick
     try:
         import Quartz  # type: ignore
 
+        centre = frontmost_window_center()
+        if centre is not None:
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventMouseMoved, centre, Quartz.kCGMouseButtonLeft))
+            time.sleep(0.02)
         for _ in range(lines):
-            ev = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, sign * 3)
+            ev = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, sign)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
             time.sleep(0.004)
     except Exception:
@@ -262,13 +1011,24 @@ def volume(op: str) -> str:
 
 _NX_KEYS = {"play_pause": 16, "next": 17, "previous": 18}
 
+_MR_CODES = {"play_pause": osa.MR_TOGGLE, "play": osa.MR_PLAY, "pause": osa.MR_PAUSE,
+             "next": osa.MR_NEXT, "previous": osa.MR_PREVIOUS}
+
 
 def media(op: str) -> None:
-    """Post a HID media key event (works for Music, Spotify, YouTube in browsers)."""
+    """Transport control for whatever macOS says is playing.
+
+    MediaRemote addresses the registered Now Playing owner directly (0.3ms). The old
+    route synthesised an NX_KEYTYPE_PLAY HID event, which any focused app may swallow
+    before the media system sees it; it stays as the fallback.
+    """
+    code = _MR_CODES.get(op)
+    if code is not None and osa.media_command(code):
+        return
     from AppKit import NSEvent  # type: ignore
     import Quartz  # type: ignore
 
-    key = _NX_KEYS[op]
+    key = _NX_KEYS.get(op, _NX_KEYS["play_pause"])
     for down in (True, False):
         flags = 0xA00 if down else 0xB00
         data1 = (key << 16) | ((0xA if down else 0xB) << 8)
@@ -327,3 +1087,48 @@ def accessibility_ok() -> bool:
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------- user entities
+
+def switch_arc_space(title: str) -> bool:
+    """Focus one of Arc's spaces by name. `active space` is read-only, but `focus` works."""
+    if "Arc" not in running_apps():
+        return False
+    try:
+        _osascript('tell application "Arc"\n'
+                   '  tell front window to focus (first space whose title is "'
+                   + _as_str(title) + '")\n'
+                   "  activate\n"
+                   "end tell")
+        return True
+    except RuntimeError:
+        return False
+
+
+def open_entity_url(target: str) -> None:
+    """Open a notion:// (or other app-scheme) deep link.
+
+    App schemes go to the owning app, not to the default browser, so `open` is correct
+    here -- unlike http(s), which this machine routes through a URL router.
+    """
+    subprocess.Popen(["open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def play_spotify_uri(uri: str, label: str = "that") -> str:
+    """Play any Spotify URI through the desktop app.
+
+    `play track` is documented for tracks but accepts album, playlist and artist URIs
+    too, so one command covers every "play my X" case. It also launches Spotify by
+    itself -- no open-and-wait needed. A malformed URI is the trap: it exits cleanly,
+    silently stops playback, and leaves `current track` unreadable afterwards.
+    """
+    uri = uri.strip()
+    if not SPOTIFY_URI.match(uri):
+        return "That is not a Spotify link I can play."
+    try:
+        _osascript('tell application "Spotify" to play track "' + _as_str(uri) + '"')
+        return "Playing " + label + "."
+    except RuntimeError:
+        osa.open_url(uri)
+        return "Opening " + label + " in Spotify."
