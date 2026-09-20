@@ -380,12 +380,23 @@ class Session:
         self.args = args
         self.stt = make_stt()
         self.stt.start()
+        # The mid-sentence guesses fire every few hundred milliseconds and only have to
+        # be right enough to start opening an app, so they run on a smaller model. The
+        # sentence itself gets the accurate one. Same machine, two ports.
+        self.draft_stt = make_stt(draft=True)
+        if self.draft_stt is not None:
+            try:
+                self.draft_stt.start()
+            except SystemExit as exc:
+                print(f"⚠ draft model unavailable ({exc}); partials use the main model.")
+                self.draft_stt = None
         self.brain = Brain()
         self.context = ContextWatcher()
         self.speaker = Speaker(enabled=not args.quiet)
         device, self.mic_name = pick_device(args.device or config.MIC)
         self.listener = Listener(device=device)
-        self.speculator = Speculator(self.brain, self.context, self.stt.transcribe,
+        draft = (self.draft_stt or self.stt).transcribe
+        self.speculator = Speculator(self.brain, self.context, draft,
                                      dry=args.dry_run, on_action=_announce_early)
         self.listener.on_partial = self.speculator.feed_audio
         self.listener.on_speech_start = self._on_speech
@@ -402,6 +413,8 @@ class Session:
     def close(self) -> None:
         self.listener.stop()
         self.stt.stop()
+        if self.draft_stt is not None:
+            self.draft_stt.stop()
 
     def process(self, pcm: np.ndarray) -> bool:
         """Transcribe + plan + execute. Returns False on 'stop'."""

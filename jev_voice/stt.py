@@ -214,8 +214,9 @@ def _wav_bytes(pcm: np.ndarray, rate: int = config.SAMPLE_RATE) -> bytes:
 
 
 class WhisperServer:
-    def __init__(self, port: int = config.WHISPER_PORT) -> None:
+    def __init__(self, port: int = config.WHISPER_PORT, model=None) -> None:
         self.port = port
+        self.model = model or config.WHISPER_MODEL
         self.url = f"http://127.0.0.1:{port}"
         self.proc: subprocess.Popen | None = None
         self.http = httpx.Client(timeout=30.0)
@@ -233,11 +234,12 @@ class WhisperServer:
         exe = shutil.which("whisper-server")
         if not exe:
             raise SystemExit("whisper-server not found: brew install whisper-cpp")
-        if not config.WHISPER_MODEL.exists():
-            raise SystemExit(f"Whisper model missing: {config.WHISPER_MODEL}\n"
-                             "  curl -L -o models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
+        if not self.model.exists():
+            raise SystemExit(f"Whisper model missing: {self.model}\n"
+                             f"  curl -L -o {self.model} "
+                             f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{self.model.name}")
         self.proc = subprocess.Popen(
-            [exe, "-m", str(config.WHISPER_MODEL), "--host", "127.0.0.1", "--port", str(self.port),
+            [exe, "-m", str(self.model), "--host", "127.0.0.1", "--port", str(self.port),
              "-t", str(config.WHISPER_THREADS), "-l", config.WHISPER_LANG, "-nt"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             # Own process group: Ctrl-C in the terminal must not kill the server
@@ -331,12 +333,22 @@ class WisprFlow:
         return text
 
 
-def make_stt():
-    """The speech-to-text backend named by STT_BACKEND."""
+def make_stt(draft: bool = False):
+    """The speech-to-text backend named by STT_BACKEND.
+
+    `draft=True` asks for the engine behind the mid-sentence guesses: a smaller model on
+    its own port, because those fire every few hundred milliseconds and only have to be
+    right enough to start opening an app.
+    """
     if config.STT_BACKEND == "wispr":
         return WisprFlow()
     if config.STT_BACKEND != "whisper":
         raise SystemExit(
             "Unknown STT_BACKEND=%r (use whisper or wispr)" % config.STT_BACKEND
         )
+    if draft:
+        if not config.WHISPER_DRAFT_MODEL or config.WHISPER_DRAFT_MODEL == config.WHISPER_MODEL:
+            return None                      # caller falls back to the main engine
+        return WhisperServer(port=config.WHISPER_DRAFT_PORT,
+                             model=config.WHISPER_DRAFT_MODEL)
     return WhisperServer()

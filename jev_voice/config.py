@@ -65,6 +65,15 @@ WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "6"))
 # so which of these transcribes "khat" correctly is a measured question, not an
 # obvious one. An .en model ignores this entirely; it cannot hear Hindi at all.
 WHISPER_LANG = os.environ.get("WHISPER_LANG", "en")
+# The model used for the guesses made WHILE you are still talking. Those only have
+# to be right enough to start opening an app, and they fire every few hundred
+# milliseconds, so they run on a smaller model than the sentence itself does.
+# Empty reuses WHISPER_MODEL for both.
+_draft = os.environ.get("WHISPER_DRAFT_MODEL", "models/ggml-base.en.bin")
+WHISPER_DRAFT_MODEL = Path(_draft) if _draft else None
+if WHISPER_DRAFT_MODEL and not WHISPER_DRAFT_MODEL.is_absolute():
+    WHISPER_DRAFT_MODEL = ROOT / WHISPER_DRAFT_MODEL
+WHISPER_DRAFT_PORT = int(os.environ.get("WHISPER_DRAFT_PORT", "8179"))
 
 # Speech to text: "whisper" (local whisper.cpp, ~100 ms, nothing leaves the machine)
 # or "wispr" (Wispr Flow's REST API -- more accurate on names, but a network round trip
