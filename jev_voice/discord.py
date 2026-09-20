@@ -46,7 +46,7 @@ class VoiceState:
     def describe(self) -> str:
         if not self.connected:
             return "not in a voice channel"
-        where = self.channel + (" in " + self.guild if self.guild else "")
+        where = "in " + self.channel + (" in " + self.guild if self.guild else "")
         flags = [f for f, on in (("muted", self.muted), ("deafened", self.deafened)) if on]
         return where + (" (" + ", ".join(flags) + ")" if flags else "")
 

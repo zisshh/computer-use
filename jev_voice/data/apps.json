@@ -4,19 +4,121 @@
   "apps": {
     "com.spotify.client": {
       "app": "Spotify",
-      "aliases": ["spotify"],
-      "readback": {"method": "applescript", "script": "tell application \"Spotify\" to return player state as text"},
+      "aliases": [
+        "spotify"
+      ],
+      "readback": {
+        "method": "applescript",
+        "script": "tell application \"Spotify\" to return player state as text"
+      },
       "capabilities": [
-        {"action_key": "play_uri", "intent": "play a track, album, playlist or artist by URI", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to play track \"<uri>\""}, "args": ["uri: spotify:(track|album|artist|playlist):<22 chars>"], "verify": {"method": "applescript", "expect": "player state is playing"}, "latency_ms": 8, "confidence": "verified", "notes": "Accepts album/playlist/artist URIs too, despite the dictionary saying track. An invalid URI exits 0, silently stops playback and leaves current track unreadable -- validate the shape first."},
-        {"action_key": "resume", "intent": "resume what was already playing", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to play"}, "confidence": "verified", "notes": "Resume only. Never the handler for 'play <name>'."},
-        {"action_key": "pause", "intent": "pause playback", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to pause"}, "confidence": "verified"},
-        {"action_key": "next_track", "intent": "skip to the next song", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to next track"}, "confidence": "verified"},
-        {"action_key": "previous_track", "intent": "go back a song", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to previous track"}, "confidence": "verified"},
-        {"action_key": "seek", "intent": "jump to a position in the track", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to set player position to <float>"}, "confidence": "verified", "notes": "Float is mandatory; an integer raises -1700."},
-        {"action_key": "set_volume", "intent": "change Spotify's own volume", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to set sound volume to <0-100>"}, "confidence": "verified"},
-        {"action_key": "resolve_name", "intent": "turn a spoken song name into a URI", "exec": {"method": "http", "request": "GET https://api.spotify.com/v1/search?q=track:<title> artist:<artist>&type=track&limit=1"}, "preconditions": ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"], "confidence": "reported", "notes": "Client Credentials is enough: no user login, no Premium. Untested here -- no keys on this machine."},
-        {"action_key": "close_window", "intent": "close Spotify's window, keep the music", "exec": {"method": "ax", "target": "AXCloseButton of first AXWindow"}, "confidence": "verified"},
-        {"action_key": "quit", "intent": "quit Spotify (stops the music)", "exec": {"method": "applescript", "script": "tell application \"Spotify\" to quit"}, "destructive": true, "confidence": "verified"}
+        {
+          "action_key": "play_uri",
+          "intent": "play a track, album, playlist or artist by URI",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to play track \"<uri>\""
+          },
+          "args": [
+            "uri: spotify:(track|album|artist|playlist):<22 chars>"
+          ],
+          "verify": {
+            "method": "applescript",
+            "expect": "player state is playing"
+          },
+          "latency_ms": 8,
+          "confidence": "verified",
+          "notes": "Accepts album/playlist/artist URIs too, despite the dictionary saying track. An invalid URI exits 0, silently stops playback and leaves current track unreadable -- validate the shape first."
+        },
+        {
+          "action_key": "resume",
+          "intent": "resume what was already playing",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to play"
+          },
+          "confidence": "verified",
+          "notes": "Resume only. Never the handler for 'play <name>'."
+        },
+        {
+          "action_key": "pause",
+          "intent": "pause playback",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to pause"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "next_track",
+          "intent": "skip to the next song",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to next track"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "previous_track",
+          "intent": "go back a song",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to previous track"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "seek",
+          "intent": "jump to a position in the track",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to set player position to <float>"
+          },
+          "confidence": "verified",
+          "notes": "Float is mandatory; an integer raises -1700."
+        },
+        {
+          "action_key": "set_volume",
+          "intent": "change Spotify's own volume",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to set sound volume to <0-100>"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "resolve_name",
+          "intent": "turn a spoken song name into a URI",
+          "exec": {
+            "method": "http",
+            "request": "GET https://api.spotify.com/v1/search?q=track:<title> artist:<artist>&type=track&limit=1"
+          },
+          "preconditions": [
+            "SPOTIFY_CLIENT_ID",
+            "SPOTIFY_CLIENT_SECRET"
+          ],
+          "confidence": "reported",
+          "notes": "Client Credentials is enough: no user login, no Premium. Untested here -- no keys on this machine."
+        },
+        {
+          "action_key": "close_window",
+          "intent": "close Spotify's window, keep the music",
+          "exec": {
+            "method": "ax",
+            "target": "AXCloseButton of first AXWindow"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "quit",
+          "intent": "quit Spotify (stops the music)",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application \"Spotify\" to quit"
+          },
+          "destructive": true,
+          "confidence": "verified"
+        }
       ],
       "impossible": [
         "Liking/saving the current song: `starred` is read-only, there is no menu item anywhere, and no default shortcut. Needs PUT /v1/me/tracks with user OAuth.",
@@ -27,17 +129,92 @@
     },
     "company.thebrowser.Browser": {
       "app": "Arc",
-      "aliases": ["arc", "browser"],
-      "readback": {"method": "applescript", "script": "tell application \"Arc\" to tell front window to return (URL of active tab) & linefeed & (title of active tab) & linefeed & (title of active space)"},
+      "aliases": [
+        "arc",
+        "browser"
+      ],
+      "readback": {
+        "method": "applescript",
+        "script": "tell application \"Arc\" to tell front window to return (URL of active tab) & linefeed & (title of active tab) & linefeed & (title of active space)"
+      },
       "capabilities": [
-        {"action_key": "read_context", "intent": "what page and space the user is on", "exec": {"method": "applescript"}, "latency_ms": 7, "confidence": "verified"},
-        {"action_key": "list_tabs", "intent": "every tab in the window, with its kind", "exec": {"method": "applescript", "script": "URL of every tab of front window / location of every tab of front window"}, "latency_ms": 226, "confidence": "verified", "notes": "`location` is topApp | pinned | unpinned. Favourites (topApp) are NOT in `tabs of <space>` -- enumerating a space alone cannot see the homepage tab. Per-tab loops cost 1419ms; the list form costs 226ms."},
-        {"action_key": "focus_tab", "intent": "raise an already-open tab", "exec": {"method": "applescript", "script": "tell front window to select tab <i>"}, "confidence": "verified", "notes": "Window-indexed selection can switch the active space, because window tabs span all spaces. Favourites never do."},
-        {"action_key": "open_url", "intent": "open a page in the current space", "exec": {"method": "applescript", "script": "tell front window to make new tab with properties {URL:\"<url>\"}"}, "confidence": "verified", "notes": "Never `open -a Arc <url>`: that makes a Little Arc window invisible to AppleScript. Never bare `open <url>` either -- the default http handler here is Velja, a URL router."},
-        {"action_key": "navigate_in_place", "intent": "send the current tab somewhere else", "exec": {"method": "js", "script": "location.href='<url>'"}, "confidence": "verified"},
-        {"action_key": "switch_space", "intent": "change Arc space", "exec": {"method": "applescript", "script": "tell front window to focus (first space whose title is \"<name>\")"}, "confidence": "verified", "notes": "`active space` is read-only (-10006)."},
-        {"action_key": "media_control", "intent": "play/pause/seek the video in the tab", "exec": {"method": "js"}, "confidence": "verified", "notes": "Pick the element: prefer one already playing, then readyState>0 and duration>1, then largest. A /shorts page had three video elements where the first was a decoy."},
-        {"action_key": "close_tab", "intent": "close the current tab", "exec": {"method": "applescript", "script": "tell front window to close active tab"}, "confidence": "verified"}
+        {
+          "action_key": "read_context",
+          "intent": "what page and space the user is on",
+          "exec": {
+            "method": "applescript"
+          },
+          "latency_ms": 7,
+          "confidence": "verified"
+        },
+        {
+          "action_key": "list_tabs",
+          "intent": "every tab in the window, with its kind",
+          "exec": {
+            "method": "applescript",
+            "script": "URL of every tab of front window / location of every tab of front window"
+          },
+          "latency_ms": 226,
+          "confidence": "verified",
+          "notes": "`location` is topApp | pinned | unpinned. Favourites (topApp) are NOT in `tabs of <space>` -- enumerating a space alone cannot see the homepage tab. Per-tab loops cost 1419ms; the list form costs 226ms."
+        },
+        {
+          "action_key": "focus_tab",
+          "intent": "raise an already-open tab",
+          "exec": {
+            "method": "applescript",
+            "script": "tell front window to select tab <i>"
+          },
+          "confidence": "verified",
+          "notes": "Window-indexed selection can switch the active space, because window tabs span all spaces. Favourites never do."
+        },
+        {
+          "action_key": "open_url",
+          "intent": "open a page in the current space",
+          "exec": {
+            "method": "applescript",
+            "script": "tell front window to make new tab with properties {URL:\"<url>\"}"
+          },
+          "confidence": "verified",
+          "notes": "Never `open -a Arc <url>`: that makes a Little Arc window invisible to AppleScript. Never bare `open <url>` either -- the default http handler here is Velja, a URL router."
+        },
+        {
+          "action_key": "navigate_in_place",
+          "intent": "send the current tab somewhere else",
+          "exec": {
+            "method": "js",
+            "script": "location.href='<url>'"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "switch_space",
+          "intent": "change Arc space",
+          "exec": {
+            "method": "applescript",
+            "script": "tell front window to focus (first space whose title is \"<name>\")"
+          },
+          "confidence": "verified",
+          "notes": "`active space` is read-only (-10006)."
+        },
+        {
+          "action_key": "media_control",
+          "intent": "play/pause/seek the video in the tab",
+          "exec": {
+            "method": "js"
+          },
+          "confidence": "verified",
+          "notes": "Pick the element: prefer one already playing, then readyState>0 and duration>1, then largest. A /shorts page had three video elements where the first was a decoy."
+        },
+        {
+          "action_key": "close_tab",
+          "intent": "close the current tab",
+          "exec": {
+            "method": "applescript",
+            "script": "tell front window to close active tab"
+          },
+          "confidence": "verified"
+        }
       ],
       "impossible": [
         "Pinning or unpinning a tab: `set location` always fails -10000 despite being declared read-write.",
@@ -50,15 +227,71 @@
     },
     "notion.id": {
       "app": "Notion",
-      "aliases": ["notion"],
-      "readback": {"method": "window_title", "parse": "<page name>"},
+      "aliases": [
+        "notion"
+      ],
+      "readback": {
+        "method": "window_title",
+        "parse": "<page name>"
+      },
       "capabilities": [
-        {"action_key": "open_page", "intent": "open a page by id", "exec": {"method": "url", "target": "notion://www.notion.so/<32 hex, no dashes>"}, "confidence": "verified", "notes": "Strip the dashes: the canonical UUID form silently no-ops. Never emit an https:// Notion link -- it resolves to Velja here."},
-        {"action_key": "open_database_view", "intent": "open one view of a database", "exec": {"method": "url", "target": "notion://app.notion.com/p/<32 hex>?v=<32 hex>"}, "confidence": "verified"},
-        {"action_key": "new_page", "intent": "start a new page", "exec": {"method": "url", "target": "notion://www.notion.so/new"}, "confidence": "verified"},
-        {"action_key": "current_page", "intent": "which page is open", "exec": {"method": "window_title"}, "latency_ms": 0.08, "confidence": "verified"},
-        {"action_key": "sidebar_press", "intent": "press a named sidebar row, back, forward, inbox", "exec": {"method": "ax", "target": "AXPress on the named element"}, "confidence": "verified", "notes": "Works while Notion is backgrounded. Native menu-bar AXPress does not."},
-        {"action_key": "quit", "intent": "quit Notion", "exec": {"method": "applescript", "script": "tell application id \"notion.id\" to quit"}, "destructive": true, "confidence": "verified"}
+        {
+          "action_key": "open_page",
+          "intent": "open a page by id",
+          "exec": {
+            "method": "url",
+            "target": "notion://www.notion.so/<32 hex, no dashes>"
+          },
+          "confidence": "verified",
+          "notes": "Strip the dashes: the canonical UUID form silently no-ops. Never emit an https:// Notion link -- it resolves to Velja here."
+        },
+        {
+          "action_key": "open_database_view",
+          "intent": "open one view of a database",
+          "exec": {
+            "method": "url",
+            "target": "notion://app.notion.com/p/<32 hex>?v=<32 hex>"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "new_page",
+          "intent": "start a new page",
+          "exec": {
+            "method": "url",
+            "target": "notion://www.notion.so/new"
+          },
+          "confidence": "verified"
+        },
+        {
+          "action_key": "current_page",
+          "intent": "which page is open",
+          "exec": {
+            "method": "window_title"
+          },
+          "latency_ms": 0.08,
+          "confidence": "verified"
+        },
+        {
+          "action_key": "sidebar_press",
+          "intent": "press a named sidebar row, back, forward, inbox",
+          "exec": {
+            "method": "ax",
+            "target": "AXPress on the named element"
+          },
+          "confidence": "verified",
+          "notes": "Works while Notion is backgrounded. Native menu-bar AXPress does not."
+        },
+        {
+          "action_key": "quit",
+          "intent": "quit Notion",
+          "exec": {
+            "method": "applescript",
+            "script": "tell application id \"notion.id\" to quit"
+          },
+          "destructive": true,
+          "confidence": "verified"
+        }
       ],
       "impossible": [
         "Any scripting dictionary: sdef returns -192. AppleScript for Notion means System Events UI scripting, ~150ms a read versus 0.04ms through a cached AX handle.",
@@ -68,19 +301,121 @@
     },
     "com.hnc.Discord": {
       "app": "Discord",
-      "aliases": ["discord"],
-      "setup": ["AXUIElementSetAttributeValue(app, 'AXManualAccessibility', True), then poll for AXDescription == 'User Settings'. Re-arm on launch and after Cmd+R."],
-      "readback": {"method": "window_title", "parse": "#<channel> | <guild> - Discord"},
+      "aliases": [
+        "discord"
+      ],
+      "setup": [
+        "AXUIElementSetAttributeValue(app, 'AXManualAccessibility', True), then poll for AXDescription == 'User Settings'. Re-arm on launch and after Cmd+R."
+      ],
+      "readback": {
+        "method": "window_title",
+        "parse": "#<channel> | <guild> - Discord"
+      },
       "capabilities": [
-        {"action_key": "read_context", "intent": "which channel and server are open", "exec": {"method": "window_title"}, "latency_ms": 0.1, "confidence": "verified"},
-        {"action_key": "list_channels", "intent": "channels of the selected server", "exec": {"method": "ax", "target": "AXLink '<name> (text channel)' / AXButton '<name> (voice channel)'"}, "latency_ms": 300, "confidence": "verified", "notes": "Voice channels are AXButton, text channels are AXLink. Only the SELECTED server is in the tree."},
-        {"action_key": "open_text_channel", "intent": "switch to a text channel by name", "exec": {"method": "ax", "target": "AXPress the channel's AXLink"}, "verify": {"method": "window_title", "expect": "#<name>"}, "confidence": "verified", "notes": "Takes effect while Discord is backgrounded -- no focus steal."},
-        {"action_key": "join_voice", "intent": "connect to a voice channel by name", "exec": {"method": "ax", "target": "AXPress the channel's AXButton"}, "verify": {"method": "ax", "expect": "AXButton 'Disconnect' exists"}, "confidence": "uncertain", "notes": "The press mechanism is verified on channel buttons; joining a live call was not tested, so the result is always read back rather than assumed."},
-        {"action_key": "mute", "intent": "mute or unmute the microphone", "exec": {"method": "ax", "target": "AXCheckBox AXDescription == 'Mute'"}, "verify": {"method": "ax", "expect": "AXValue == '1'"}, "confidence": "uncertain", "notes": "State reads correctly; the toggle itself was not pressed, to avoid unmuting a live mic."},
-        {"action_key": "deafen", "intent": "deafen or undeafen", "exec": {"method": "ax", "target": "AXCheckBox AXDescription == 'Deafen'"}, "confidence": "uncertain"},
-        {"action_key": "disconnect", "intent": "leave the voice call", "exec": {"method": "ax", "target": "AXButton AXDescription == 'Disconnect'"}, "confidence": "uncertain", "notes": "Its ABSENCE is the reliable 'not connected' signal."},
-        {"action_key": "open_server", "intent": "switch server by id", "exec": {"method": "url", "target": "discord://-/channels/<guild_id>", "activate": false}, "confidence": "reported", "notes": "Silent no-op for a server the account is not in. No guild ids are available from AX."},
-        {"action_key": "quit", "intent": "quit Discord", "exec": {"method": "applescript"}, "destructive": true, "confidence": "verified", "notes": "Drops an active call -- guarded behind an explicit 'anyway'."}
+        {
+          "action_key": "read_context",
+          "intent": "which channel and server are open",
+          "exec": {
+            "method": "window_title"
+          },
+          "latency_ms": 0.1,
+          "confidence": "verified"
+        },
+        {
+          "action_key": "list_channels",
+          "intent": "channels of the selected server",
+          "exec": {
+            "method": "ax",
+            "target": "AXLink '<name> (text channel)' / AXButton '<name> (voice channel)'"
+          },
+          "latency_ms": 300,
+          "confidence": "verified",
+          "notes": "Voice channels are AXButton, text channels are AXLink. Only the SELECTED server is in the tree."
+        },
+        {
+          "action_key": "open_text_channel",
+          "intent": "switch to a text channel by name",
+          "exec": {
+            "method": "ax",
+            "target": "AXPress the channel's AXLink"
+          },
+          "verify": {
+            "method": "window_title",
+            "expect": "#<name>"
+          },
+          "confidence": "verified",
+          "notes": "Takes effect while Discord is backgrounded -- no focus steal."
+        },
+        {
+          "action_key": "join_voice",
+          "intent": "connect to a voice channel by name",
+          "exec": {
+            "method": "ax",
+            "target": "AXPress the channel's AXButton"
+          },
+          "verify": {
+            "method": "ax",
+            "expect": "AXButton 'Disconnect' exists"
+          },
+          "confidence": "verified",
+          "notes": "Verified: pressing the channel's AXButton genuinely CONNECTS -- it does not merely open the chat view. Confirmed by the Disconnect button appearing and the voice panel naming the channel and server.",
+          "latency_ms": 1200
+        },
+        {
+          "action_key": "mute",
+          "intent": "mute or unmute the microphone",
+          "exec": {
+            "method": "ax",
+            "target": "AXCheckBox AXDescription == 'Mute'"
+          },
+          "verify": {
+            "method": "ax",
+            "expect": "AXValue == '1'"
+          },
+          "confidence": "verified",
+          "notes": "Verified by a full round trip: unmute -> read AXValue '' -> mute -> read AXValue '1'."
+        },
+        {
+          "action_key": "deafen",
+          "intent": "deafen or undeafen",
+          "exec": {
+            "method": "ax",
+            "target": "AXCheckBox AXDescription == 'Deafen'"
+          },
+          "confidence": "verified",
+          "notes": "Verified by a full round trip."
+        },
+        {
+          "action_key": "disconnect",
+          "intent": "leave the voice call",
+          "exec": {
+            "method": "ax",
+            "target": "AXButton AXDescription == 'Disconnect'"
+          },
+          "confidence": "verified",
+          "notes": "Verified: after pressing, the Disconnect element is gone and voice state reads not connected."
+        },
+        {
+          "action_key": "open_server",
+          "intent": "switch server by id",
+          "exec": {
+            "method": "url",
+            "target": "discord://-/channels/<guild_id>",
+            "activate": false
+          },
+          "confidence": "reported",
+          "notes": "Silent no-op for a server the account is not in. No guild ids are available from AX."
+        },
+        {
+          "action_key": "quit",
+          "intent": "quit Discord",
+          "exec": {
+            "method": "applescript"
+          },
+          "destructive": true,
+          "confidence": "verified",
+          "notes": "Drops an active call -- guarded behind an explicit 'anyway'."
+        }
       ],
       "impossible": [
         "Joining voice by URL: no discord:// route connects to voice. Nor do mute, deafen, screen share or disconnect have URLs.",
@@ -92,9 +427,38 @@
     "_system": {
       "app": "macOS",
       "capabilities": [
-        {"action_key": "media_transport", "intent": "pause/resume/skip whatever is playing", "exec": {"method": "mediaremote", "call": "MRMediaRemoteSendCommand(<0 play|1 pause|2 toggle|4 next|5 previous>, NULL)"}, "latency_ms": 0.3, "confidence": "verified", "notes": "Replaces synthesising NX_KEYTYPE_PLAY, which a focused app can swallow."},
-        {"action_key": "playback_owner", "intent": "which app owns Now Playing", "exec": {"method": "mediaremote", "call": "MRNowPlayingRequest.localNowPlayingPlayerPath().client().bundleIdentifier()"}, "latency_ms": 0.02, "confidence": "verified", "notes": "The owner is the LAST app to register, not necessarily the audible one -- always cross-check liveness."},
-        {"action_key": "window_title", "intent": "free app-internal state", "exec": {"method": "ax", "target": "AXFocusedWindow -> AXTitle on a cached app element"}, "latency_ms": 0.08, "confidence": "verified"}
+        {
+          "action_key": "media_transport",
+          "intent": "pause/resume/skip whatever is playing",
+          "exec": {
+            "method": "mediaremote",
+            "call": "MRMediaRemoteSendCommand(<0 play|1 pause|2 toggle|4 next|5 previous>, NULL)"
+          },
+          "latency_ms": 0.3,
+          "confidence": "verified",
+          "notes": "Replaces synthesising NX_KEYTYPE_PLAY, which a focused app can swallow."
+        },
+        {
+          "action_key": "playback_owner",
+          "intent": "which app owns Now Playing",
+          "exec": {
+            "method": "mediaremote",
+            "call": "MRNowPlayingRequest.localNowPlayingPlayerPath().client().bundleIdentifier()"
+          },
+          "latency_ms": 0.02,
+          "confidence": "verified",
+          "notes": "The owner is the LAST app to register, not necessarily the audible one -- always cross-check liveness."
+        },
+        {
+          "action_key": "window_title",
+          "intent": "free app-internal state",
+          "exec": {
+            "method": "ax",
+            "target": "AXFocusedWindow -> AXTitle on a cached app element"
+          },
+          "latency_ms": 0.08,
+          "confidence": "verified"
+        }
       ],
       "impossible": [
         "Reading Now Playing metadata from MediaRemote: the info dictionary is entitlement-gated and comes back empty. Ask the owning app instead.",
