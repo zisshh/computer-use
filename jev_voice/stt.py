@@ -21,6 +21,26 @@ _BLANK = {"", "[BLANK_AUDIO]", "(silence)", "[silence]", "[inaudible]", "[Music]
 # Whisper hallucinates these on near-silent audio.
 _HALLUCINATIONS = {"thank you.", "thanks for watching.", "thank you for watching.", "you", "bye.", "thank you"}
 
+# Whisper labels non-speech audio rather than transcribing it: "(beep)", "*sigh*",
+# "[DING]", "(dog barks)", "(horn honks)". Music produces a stream of these, and each one
+# used to cost a full Jev call before being ignored. A whole utterance made only of them
+# is by definition not a command.
+_NON_SPEECH = re.compile(r"^[\s]*[\(\[\*][^\)\]\*]{0,40}[\)\]\*][\s.!?]*$")
+# Filler that is never a command on its own.
+_FILLER = {"um", "uh", "uhh", "hmm", "huh", "ah", "oh", "mm", "mhm", "okay", "ok",
+           "yeah", "yep", "so", "but", "and", "well", "hello", "hi", "bye", "bye-bye"}
+
+
+def is_noise(text: str) -> bool:
+    """Is this transcript non-speech, filler, or a label rather than a command?"""
+    stripped = text.strip()
+    if not stripped or stripped in _BLANK:
+        return True
+    lowered = stripped.lower()
+    if lowered in _HALLUCINATIONS or _NON_SPEECH.match(stripped):
+        return True
+    return lowered.strip(" .,!?…") in _FILLER
+
 
 # Every extra token of initial prompt is decode time: 80 terms cost +24 ms against
 # base.en's 60 ms, 20 terms cost +7 ms for the same practical benefit. The list must be
@@ -230,7 +250,7 @@ class WhisperServer:
         r = self.http.post(self.url + "/inference", files=files, data=data)
         r.raise_for_status()
         text = (r.json().get("text") or "").strip()
-        if text in _BLANK or text.lower() in _HALLUCINATIONS or len(text) < 2:
+        if is_noise(text) or len(text) < 2:
             return ""
         return text
 
@@ -274,7 +294,7 @@ class WisprFlow:
         r = self.http.post(config.WISPR_URL, json=payload)
         r.raise_for_status()
         text = (r.json().get("text") or "").strip()
-        if text in _BLANK or text.lower() in _HALLUCINATIONS or len(text) < 2:
+        if is_noise(text) or len(text) < 2:
             return ""
         return text
 

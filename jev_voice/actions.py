@@ -1172,7 +1172,10 @@ def app_media(app: str, op: str) -> str:
 
 # ---------------------------------------------------------------- ducking
 
-DUCK_ENABLED = os.environ.get("DUCK", "1") not in ("0", "false", "no")
+# Off by default. Ducking on speech-start only works if speech-start is reliable, and
+# with music playing it is not: whisper hears "(beep)" and "*sigh*" in the song, the
+# VAD opens, the volume dips and restores over and over. Fix the detection first.
+DUCK_ENABLED = os.environ.get("DUCK", "0") not in ("0", "false", "no")
 DUCK_LEVEL = float(os.environ.get("DUCK_LEVEL", "0.18"))
 
 _ducked: dict[str, object] = {}

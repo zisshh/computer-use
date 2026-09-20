@@ -23,11 +23,12 @@ import numpy as np
 
 from typing import Any
 
-from . import actions, config, routing
+from . import actions, config, routing, vad
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
 from .context import media_playing as context_media_playing
 from .stt import correct as stt_correct
+from .stt import is_noise
 from .streaming import Speculator, normalise, retracted
 from .overlay import NullOverlay
 from .persona import flavor
@@ -371,7 +372,7 @@ class Session:
     """Shared runtime for all mic modes."""
 
     def __init__(self, args: argparse.Namespace) -> None:
-        from .audio import Listener
+        from .audio import Listener, pick_device
         from .stt import make_stt
 
         if not actions.accessibility_ok():
@@ -382,13 +383,15 @@ class Session:
         self.brain = Brain()
         self.context = ContextWatcher()
         self.speaker = Speaker(enabled=not args.quiet)
-        self.listener = Listener(device=args.device)
+        device, self.mic_name = pick_device(args.device or config.MIC)
+        self.listener = Listener(device=device)
         self.speculator = Speculator(self.brain, self.context, self.stt.transcribe,
                                      dry=args.dry_run, on_action=_announce_early)
         self.listener.on_partial = self.speculator.feed_audio
         self.listener.on_speech_start = self._on_speech
         self.listener.media_active = context_media_playing
         self.listener.start()
+        vad.prewarm()      # so the first utterance never pays for the model load
 
     def _on_speech(self) -> None:
         """Everything that can be done before the sentence exists, done now."""
@@ -404,11 +407,13 @@ class Session:
         """Transcribe + plan + execute. Returns False on 'stop'."""
         if len(pcm) < config.SAMPLE_RATE * 0.25:
             return True
+        if not vad.has_speech(pcm):
+            return True
         t0 = time.perf_counter()
-        text = stt_correct(self.stt.transcribe(pcm))
+        text = stt_correct(self.stt.transcribe(vad.trim(pcm)))
         self.speculator.seal()
         stt_ms = int((time.perf_counter() - t0) * 1000)
-        if not text:
+        if not text or is_noise(text):
             print("  (heard nothing)")
             return True
         print(f"🗣  {text}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms)")
@@ -434,6 +439,7 @@ _WAKE_ANY = re.compile(r"\W*\b(?:" + "|".join(map(re.escape, WAKE_WORDS)) + r")\
 
 
 UNNAMED_COMMANDS = os.environ.get("UNNAMED_COMMANDS", "1") not in ("0", "false", "no")
+WAKE_WHEN_PLAYING = os.environ.get("WAKE_WHEN_PLAYING", "1") not in ("0", "false", "no")
 UNNAMED_MIN_ADDRESSED = float(os.environ.get("UNNAMED_MIN_ADDRESSED", "0.7"))
 UNNAMED_MIN_CONFIDENCE = float(os.environ.get("UNNAMED_MIN_CONFIDENCE", "0.7"))
 # Inside the follow-up window an utterance is likelier to be a command, but it is
@@ -473,6 +479,35 @@ def strip_wake(text: str) -> tuple[bool, str]:
 
 # ------------------------------------------------------------------ modes
 
+def list_devices() -> None:
+    """Every microphone this machine offers, so --device has something to name."""
+    import sounddevice as sd
+
+    default = sd.query_devices(kind="input")["name"]
+    print("Microphones:")
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] > 0:
+            mark = "  (default)" if d["name"] == default else ""
+            print(f"  [{i}] {d['name']}{mark}")
+    print('\nPick one with --device "USB Condenser", or MIC="USB Condenser" in .env.')
+
+
+def mic_line(name: str) -> str:
+    """Name the microphone, and say so when it is the one sitting on the speakers."""
+    import sounddevice as sd
+
+    line = f"🎤 Mic: {name}"
+    try:
+        out = sd.query_devices(kind="output")["name"]
+    except Exception:
+        return line
+    if "MacBook" in name and "MacBook" in out:
+        line += ("\n   ↳ built-in mic + built-in speakers: it hears whatever is playing "
+                 "~7 dB louder than a desk mic does.\n"
+                 '     Plug one in and set MIC="USB Condenser" in .env, or use headphones.')
+    return line
+
+
 def run_smart(s: Session) -> None:
     """Hands-free. Mic is always open; only utterances that name the assistant (or follow
     a command within FOLLOWUP_SECONDS, or follow a Caps Lock tap) are sent to Jev."""
@@ -500,6 +535,7 @@ def run_smart(s: Session) -> None:
              else " (Caps Lock tap off: CAPSLOCK=0 in .env.)" if not CAPSLOCK
              else " (Caps Lock tap unavailable: no Accessibility/Input Monitoring.)")
           + f"  (Jev {s.brain.model}, whisper {config.WHISPER_MODEL.stem.removeprefix(chr(103)+chr(103)+chr(109)+chr(108)+chr(45))}, voice {s.speaker.engine}:{s.speaker.voice})")
+    print(mic_line(s.mic_name))
     print(QUIT_HINT)
     if FEEDBACK == "voice":
         s.speaker.say(flavor("Ready."))
@@ -517,12 +553,20 @@ def run_smart(s: Session) -> None:
     while True:
         try:
             pcm = s.listener.next_utterance()
+            # The energy gate only knows the room got louder, and a song gets
+            # louder. Ask a detector that knows what a voice is, before spending
+            # anything on whisper or on a decision.
+            if not vad.has_speech(pcm):
+                OVERLAY.set("idle", IDLE_LABEL, revert_after=0.1)
+                continue
             OVERLAY.set("heard", "Transcribing…")
             t0 = time.perf_counter()
-            text = stt_correct(s.stt.transcribe(pcm))
+            text = stt_correct(s.stt.transcribe(vad.trim(pcm)))
             s.speculator.seal()           # the sentence exists now; stop guessing at it
             stt_ms = int((time.perf_counter() - t0) * 1000)
-            if not text:
+            # Whisper never returns nothing: given a cough or a bar of music it
+            # writes "(sighs)" or "um". Those are not commands.
+            if not text or is_noise(text):
                 OVERLAY.set("idle", IDLE_LABEL, revert_after=0.1)
                 continue
             OVERLAY.set("heard", text)
@@ -534,6 +578,14 @@ def run_smart(s: Session) -> None:
                 continue
             gate = None
             if not addressed:
+                # Music has words in it. While it is playing, anything that does not
+                # name the assistant is treated as part of the room -- which is what
+                # every always-on assistant does, and the only reliable answer until
+                # the song is removed from the microphone signal itself.
+                if WAKE_WHEN_PLAYING and not followup and context_media_playing():
+                    print(f"   ·  {text}   (music playing: say the name first)")
+                    OVERLAY.set("idle", f"Say the name: {text}", revert_after=2.0)
+                    continue
                 if not (UNNAMED_COMMANDS or followup):
                     print(f"   ·  {text}   (ignored: no name, stt {stt_ms}ms)")
                     OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
@@ -764,12 +816,16 @@ def main() -> None:
     p.add_argument("--hold", action="store_true", help="Caps Lock hold-to-talk only, no wake word")
     p.add_argument("--always-on", action="store_true", help="open mic, every utterance is a command (no wake word)")
     p.add_argument("--ptt", action="store_true", help="push-to-talk in the terminal (Enter to start/stop)")
-    p.add_argument("--device", help="input device index or name substring (see `uv run python -m sounddevice`)")
+    p.add_argument("--device", help="input device index or name substring (see --list-devices)")
+    p.add_argument("--list-devices", action="store_true", help="show every microphone and exit")
     p.add_argument("--quiet", action="store_true", help="no spoken replies")
     p.add_argument("--no-overlay", action="store_true", help="no floating transcription pill")
     args = p.parse_args()
     if args.device and args.device.isdigit():
         args.device = int(args.device)
+    if args.list_devices:
+        list_devices()
+        return
     if args.text:
         run_text(args)
     else:

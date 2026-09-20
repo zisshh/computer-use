@@ -31,12 +31,34 @@ class VADConfig:
     pre_roll_ms: int = int(os.environ.get("VAD_PRE_ROLL_MS", "240"))
     partial_ms: int = int(os.environ.get("SPECULATE_INTERVAL_MS", "480"))
     threshold_mult: float = float(os.environ.get("VAD_THRESHOLD_MULT", "3.5"))
-    # Applied while the speakers are playing. BELOW 1 on purpose: music raises the
-    # adaptive noise floor, so the same multiplier demands a shout over it -- which
-    # is the complaint. A false trigger costs an ignored line; a missed command
-    # costs the user saying it again, louder.
-    media_mult: float = float(os.environ.get("VAD_MEDIA_MULT", "0.7"))
+    # Applied while the speakers are playing. It was set below 1 to make speech easier
+    # to hear over music; that backfired -- the MUSIC cleared the lowered bar, every
+    # song transient opened the mic, and an energy VAD cannot tell a voice in a song
+    # from the voice in the room. Neutral until the detector itself can.
+    media_mult: float = float(os.environ.get("VAD_MEDIA_MULT", "1.0"))
     floor_min: float = float(os.environ.get("VAD_FLOOR_MIN", "0.004"))
+
+
+def pick_device(want: str | None) -> tuple[int | None, str]:
+    """Resolve a microphone by name fragment. Returns (index, human name).
+
+    A built-in microphone sits a few inches from the built-in speakers, so it hears
+    whatever is playing about 7 dB louder than a desk microphone does -- measured on
+    this machine. Naming a better one is the cheapest noise fix there is.
+    """
+    devices = sd.query_devices()
+    if want:
+        wanted = str(want).strip().lower()
+        for i, d in enumerate(devices):
+            if d["max_input_channels"] > 0 and wanted in d["name"].lower():
+                return i, d["name"]
+        # A named mic that is merely unplugged must not stop the assistant starting.
+        print(f"⚠ No microphone matching {want!r} — falling back to the system default.")
+    try:
+        return None, sd.query_devices(kind="input")["name"]
+    except Exception:
+        return None, "system default"
+
 
 
 class Listener:

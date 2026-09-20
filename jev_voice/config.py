@@ -71,6 +71,10 @@ WISPR_URL = os.environ.get("WISPR_URL", "https://platform-api.wisprflow.ai/api/v
 STT_BIAS_VOCAB = os.environ.get("STT_BIAS_VOCAB", "1") not in ("0", "false", "no")
 
 SAMPLE_RATE = 16000
+# Microphone, by name fragment ("USB Condenser"). Empty = the system default.
+# The built-in mic sits on top of the built-in speakers, so it hears your music
+# about 7 dB louder than a desk mic does -- measured, not guessed.
+MIC = os.environ.get("MIC", "")
 TTS_VOICE = os.environ.get("TTS_VOICE", "Samantha")
 TTS_RATE = int(os.environ.get("TTS_RATE", "210"))
 

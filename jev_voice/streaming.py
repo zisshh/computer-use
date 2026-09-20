@@ -189,10 +189,15 @@ class Speculator:
 
     def _work(self, pcm) -> None:
         try:
-            from .stt import correct
+            from . import vad
+            from .stt import correct, is_noise
 
-            text = correct(self.transcribe(pcm))
-            if text:
+            # This runs on a background thread, so the gate is free -- and a partial
+            # is the most dangerous place to hear a song, because it can act.
+            if not vad.has_speech(pcm):
+                return
+            text = correct(self.transcribe(vad.trim(pcm)))
+            if text and not is_noise(text):
                 self.feed_text(text)
         except Exception:
             pass
