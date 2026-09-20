@@ -23,7 +23,7 @@ import numpy as np
 
 from typing import Any
 
-from . import actions, config, route, routing, vad
+from . import actions, config, mics, route, routing, vad
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
 from .context import media_playing as context_media_playing
@@ -409,6 +409,7 @@ class Session:
         self.listener.media_active = context_media_playing
         self.listener.start()
         vad.prewarm()      # so the first utterance never pays for the model load
+        mics.prewarm()     # the first scan costs 23ms; pay it now, not mid-sentence
 
     def _on_speech(self) -> None:
         """Everything that can be done before the sentence exists, done now."""
@@ -462,6 +463,10 @@ UNNAMED_COMMANDS = os.environ.get("UNNAMED_COMMANDS", "1") not in ("0", "false",
 # Off: the assistant must keep working while music plays. Set to 1 to require the
 # name during playback instead -- safer, and much more annoying.
 WAKE_WHEN_PLAYING = os.environ.get("WAKE_WHEN_PLAYING", "0") not in ("0", "false", "no")
+# On a call, almost everything said is to the other person. macOS shares the
+# microphone, so Jev still hears all of it -- which is exactly why it has to be
+# addressed by name for the duration. Unlike music, this is what you want.
+WAKE_WHEN_CALLING = os.environ.get("WAKE_WHEN_CALLING", "1") not in ("0", "false", "no")
 # What an unnamed utterance has to clear while audio is playing.
 PLAYING_MIN_ADDRESSED = float(os.environ.get("PLAYING_MIN_ADDRESSED", "0.80"))
 PLAYING_MIN_CONFIDENCE = float(os.environ.get("PLAYING_MIN_CONFIDENCE", "0.55"))
@@ -564,6 +569,9 @@ def run_smart(s: Session) -> None:
     print(f"🔊 Out: {route.describe()}"
           + ("" if route.leaks_into_the_room()
              else " — nothing leaks into the mic, so music never gets in the way."))
+    if mics.on_a_call():
+        print(f"📞 {mics.describe()} has the mic too — macOS shares it, so Jev still "
+              f"hears you.\n   While a call is up, say the name first.")
     print(QUIT_HINT)
     if FEEDBACK == "voice":
         s.speaker.say(flavor("Ready."))
@@ -614,6 +622,13 @@ def run_smart(s: Session) -> None:
                 #
                 # And on headphones none of this applies: the song is not in the room, so
                 # anything the microphone hears is a person. Checking costs 0.1ms.
+                if WAKE_WHEN_CALLING and not followup and mics.on_a_call():
+                    who = mics.describe()
+                    print(f"   ·  {text}   (on a call{' in ' + who if who else ''}: "
+                          f"say the name first)")
+                    OVERLAY.set("idle", f"On a call — say the name: {text}",
+                                revert_after=2.0)
+                    continue
                 playing = (not followup and route.leaks_into_the_room()
                            and context_media_playing())
                 if WAKE_WHEN_PLAYING and playing:
