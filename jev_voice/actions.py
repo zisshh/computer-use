@@ -802,6 +802,25 @@ SPOTIFY_URI = re.compile(r"^spotify:(track|album|artist|playlist):[A-Za-z0-9]{22
 _uri_cache: dict[str, str] = {}
 
 
+# "play the blonde album" is a different search from "play blonde", and `play track`
+# accepts album, playlist and artist URIs as well as tracks.
+_SPOTIFY_KIND = re.compile(
+    r"\b(?P<kind>album|playlist|artist|mix|radio)\b", re.I)
+
+
+def spotify_kind(spoken: str) -> tuple[str, str]:
+    """(search type, query with the type word removed)."""
+    match = _SPOTIFY_KIND.search(spoken)
+    if not match:
+        return "track", spoken
+    word = match.group("kind").lower()
+    kind = {"mix": "playlist", "radio": "artist"}.get(word, word)
+    cleaned = (spoken[:match.start()] + " " + spoken[match.end():]).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.")
+    cleaned = re.sub(r"^(the|my|a)\s+", "", cleaned, flags=re.I)
+    return kind, cleaned or spoken
+
+
 def spotify_query(spoken: str) -> str:
     """Turn "nights by frank ocean" into Spotify's fielded search syntax.
 
@@ -815,28 +834,56 @@ def spotify_query(spoken: str) -> str:
 
 
 def _spotify_track_uri(query: str) -> str | None:
-    """Spoken name -> track URI. Cached, because this HTTP call is the whole delay."""
+    """Spoken name -> a playable Spotify URI. Cached: this HTTP call is the whole delay."""
     key = query.casefold()
     if key in _uri_cache:
         return _uri_cache[key]
     token = _spotify_token_get()
     if not token:
         return None
+    kind, cleaned = spotify_kind(query)
     try:
         import httpx
 
         r = httpx.get("https://api.spotify.com/v1/search",
-                      params={"q": spotify_query(query), "type": "track", "limit": 1},
+                      params={"q": spotify_query(cleaned) if kind == "track" else cleaned,
+                              "type": kind, "limit": 1},
                       headers={"Authorization": "Bearer " + token}, timeout=6.0)
         r.raise_for_status()
-        items = r.json().get("tracks", {}).get("items") or []
-        uri = items[0]["uri"] if items else None
+        items = (r.json().get(kind + "s", {}) or {}).get("items") or []
+        uri = items[0]["uri"] if items and items[0] else None
     except Exception:
         return None
     if uri and SPOTIFY_URI.match(uri):
         _uri_cache[key] = uri
         return uri
     return None
+
+
+def spotify_now(differs_from: str = "", timeout: float = 0.7) -> str:
+    """"Track - Artist" as Spotify itself reports it, or ''.
+
+    Spotify updates `current track` a beat AFTER `play track` returns, so reading it
+    straight away reports the PREVIOUS song -- which is worse than saying nothing,
+    because it sounds like confirmation. Wait for it to actually change.
+    """
+    deadline = time.time() + timeout
+    latest = ""
+    first = True
+    while first or time.time() < deadline:      # always read once, even at timeout=0
+        first = False
+        try:
+            latest = _osascript(
+                'tell application "Spotify" to return (name of current track) '
+                '& " - " & (artist of current track)').strip()
+        except RuntimeError:
+            latest = ""
+        if latest and latest.strip(" -") and latest != differs_from:
+            return latest
+        time.sleep(0.08)
+    # Waited it out: whatever is loaded now is the truth, even if it is the same song
+    # the user asked for again.
+    return latest
 
 
 def play_named_track(query: str, service: str = "spotify") -> str:
@@ -860,8 +907,11 @@ def play_named_track(query: str, service: str = "spotify") -> str:
         # `play track` launches Spotify itself, so the old open-then-sleep was pure
         # added latency. An invalid URI would silently STOP playback instead of
         # erroring, which is why the shape is checked before it is sent.
+        before = spotify_now(timeout=0.0)
         if play_spotify_uri(uri, query).startswith("Playing"):
-            return "Playing " + query + "."
+            # Report what Spotify actually started, not what was asked for: it is the
+            # proof the right thing is playing, and it names the artist you got.
+            return "Playing " + (spotify_now(differs_from=before) or query) + "."
     # No credentials means Spotify can only be *searched*, never told to play a named
     # track. Falling back to YouTube actually plays the song instead of leaving the user
     # staring at a search result they still have to click.
@@ -1112,6 +1162,7 @@ def app_media(app: str, op: str) -> str:
         _osascript(f'tell application "{_as_str(app)}" to {commands[op]}')
     except RuntimeError:
         return ""
+    time.sleep(0.12)      # player state lags the command it is confirming
     try:
         state = _osascript(f'tell application "{_as_str(app)}" to return player state as text')
     except RuntimeError:
