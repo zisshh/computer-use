@@ -312,3 +312,52 @@ def voice_channel_named(utterance: str) -> str:
     words = [w for w in match.group("name").split() if w.lower() not in _FILLER]
     name = " ".join(words).strip()
     return "" if not name or _CHANNEL_NOISE.match(name) else name
+
+
+# ---------------------------------------------------------------- Claude Code
+
+# Whisper hears "claude" as "claud", "cloud", "clawed" and "klaus" often enough that
+# leaving them out makes the feature look mis-heard rather than broken. The last three
+# are ordinary words too, though -- "tell my cloud to sync the photos" is not a message
+# for an agent -- so they only count when "code" follows and settles it.
+_CLAUDE_WORD = r"(?:(?:claude|claud)(?:\s+code)?|(?:cloud|clawed|klaus)\s+code)"
+_CLAUDE = re.compile(
+    r"\b(?:tell|ask|send|have|get|message)\s+"
+    r"(?:my|the|our)?\s*"
+    + _CLAUDE_WORD +
+    r"(?:\s+(?:instance|session|agent|window|tab|terminal))?"
+    r"(?:\s+an?\s+(?:message|prompt|note|line))?"
+    r"(?:\s+(?:in|inside|at|on|under|for)\s+(?:the\s+|my\s+)?(?P<target>.{1,60}?))?"
+    r"\s+(?:to|that|saying|says|:)\s+(?P<prompt>.+)$",
+    re.I | re.S)
+# The same thing with the target last: "tell claude to do X in the jev voice window".
+_CLAUDE_TAIL = re.compile(
+    r"\bin\s+(?:the\s+|my\s+)?(?P<target>[\w' -]{2,50}?)\s+"
+    r"(?:window|tab|terminal|session|instance|one)\s*$", re.I)
+
+
+def claude_command(utterance: str) -> tuple[str, str]:
+    """(which session, what to send it) for "tell claude in X to Y", else ("", "").
+
+    Jev has no action for this -- it returns type_text holding the whole sentence,
+    addressing and all -- so the split is owned here, next to the other rules the
+    decision model cannot express.
+
+    A separator is required: "tell claude in X TO do the thing". Without one, as in
+    "have claude in X update the readme", there is no way to tell where the session
+    name stops and the instruction starts, and guessing wrong sends the instruction to
+    the wrong agent. Those fall through to Jev unmatched, which is the safe failure.
+    """
+    match = _CLAUDE.search(utterance.strip())
+    if not match:
+        return "", ""
+    target = (match.group("target") or "").strip(" ,.")
+    prompt = (match.group("prompt") or "").strip(" ,.")
+    if not target:
+        tail = _CLAUDE_TAIL.search(prompt)
+        if tail:
+            target = tail.group("target").strip()
+            prompt = prompt[:tail.start()].strip(" ,.")
+    if len(prompt) < 2:
+        return "", ""
+    return target, prompt

@@ -23,7 +23,7 @@ import numpy as np
 
 from typing import Any
 
-from . import actions, config, focus, mics, route, routing, vad
+from . import actions, config, focus, ghostty, mics, route, routing, vad
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
 from .context import media_playing as context_media_playing
@@ -302,9 +302,29 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
         print(f"  ⏩ already done while you were speaking: {utterance}")
         return True
     OVERLAY.set("thinking", f"{utterance}")
-    # "open the second video" has no action to map to -- Jev reads it as a play/pause on
-    # the current tab -- and the page already knows the answer, so it is settled here
-    # rather than spending a decision call on it.
+    # "tell my claude code instance inside notion agency workspace to run the tests".
+    # Jev returns type_text holding that entire sentence, addressing and all, so this
+    # is settled here. Ghostty addresses a terminal by object reference, so the prompt
+    # cannot land in a window the user did not name.
+    if not plan and ghostty.ENABLED:
+        target, prompt = routing.claude_command(utterance)
+        if prompt:
+            term, why = ghostty.resolve(target)
+            if term is None:
+                reply = why                      # refuse, never guess between two
+            elif ghostty.send(term, prompt, enter=ghostty.SEND_ENTER):
+                reply = f"Sent to {term.label}."
+            else:
+                reply = f"I couldn't reach {term.label}."
+            print(f"  → claude: {reply}")
+            OVERLAY.set("done", reply, revert_after=2.5)
+            print(f"  ◀ {reply}")
+            if FEEDBACK == "voice":
+                speaker.say(reply)
+            else:
+                ding(SOUND_DONE if term is not None else SOUND_FAIL)
+            return True
+
     # With Discord in focus, "mute me" means mute in Discord and "open general chat"
     # means that channel. Jev has no way to know which app the sentence is about, and
     # its general reading of "mute me" is the system volume.
@@ -323,6 +343,9 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
             focus.note("Discord", via="discord")
             return True
 
+    # "open the second video" has no action to map to -- Jev reads it as a play/pause on
+    # the current tab -- and the page already knows the answer, so it is settled here
+    # rather than spending a decision call on it.
     nth = routing.nth_result(utterance)
     if nth and not plan:
         opened, what = actions.open_nth_result(nth)
