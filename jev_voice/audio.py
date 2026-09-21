@@ -39,14 +39,38 @@ class VADConfig:
     floor_min: float = float(os.environ.get("VAD_FLOOR_MIN", "0.004"))
 
 
+def _auto_mic(devices) -> str | None:
+    """None to keep the system default; a name when the default would hear the speakers."""
+    from . import route
+
+    try:
+        current = sd.query_devices(kind="input")["name"]
+    except Exception:
+        return None
+    if "MacBook" not in current or not route.leaks_into_the_room():
+        return None                     # the user's own choice, or nothing to fix
+    for d in devices:                   # a desk mic sits further from the speakers
+        if d["max_input_channels"] > 0 and "MacBook" not in d["name"] \
+                and "iphone" not in d["name"].lower():
+            return d["name"]
+    return None
+
+
 def pick_device(want: str | None) -> tuple[int | None, str]:
     """Resolve a microphone by name fragment. Returns (index, human name).
 
-    A built-in microphone sits a few inches from the built-in speakers, so it hears
-    whatever is playing about 7 dB louder than a desk microphone does -- measured on
-    this machine. Naming a better one is the cheapest noise fix there is.
+    "auto" (the default) follows whatever the user chose in System Settings, and only
+    overrides it in the one case that measurably hurts: the built-in microphone while
+    the built-in speakers are playing, where it hears playback about 7 dB louder than a
+    desk microphone does.
+
+    Pinning a specific microphone is worse than it sounds. Wearing AirPods and speaking
+    into them while the app listens to a condenser across the desk produces exactly the
+    symptom it looks like a recognition bug: every word slightly wrong.
     """
     devices = sd.query_devices()
+    if want and want.strip().lower() in ("auto", "default"):
+        want = _auto_mic(devices)
     if want:
         wanted = str(want).strip().lower()
         for i, d in enumerate(devices):

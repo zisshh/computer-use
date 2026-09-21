@@ -486,6 +486,12 @@ def _focus_arc_tab(url: str) -> OpenResult | None:
         return _LOCATION_RANK.get(where, 3), i
 
     best = min(hits, key=rank)
+    # A tab in another space is not worth being moved to another space for. Saying
+    # "open youtube" and being thrown into a different Arc space loses the window the
+    # user was working in; opening it here costs one duplicate tab. Favourites are
+    # exempt because they are visible from every space, so raising one moves nothing.
+    if STAY_IN_SPACE and rank(best)[0] != 0:
+        return None
     before = ""
     if rank(best)[0] != 0:          # only a favourite is guaranteed not to move us
         try:
@@ -504,6 +510,79 @@ def _focus_arc_tab(url: str) -> OpenResult | None:
             after = ""
     return OpenResult("Arc", reused_tab=True,
                       switched_space=after if after and after != before else "")
+
+
+STAY_IN_SPACE = os.environ.get("ARC_STAY_IN_SPACE", "1") not in ("0", "false", "no")
+
+# Shortcuts that mean "a browser tab", not "this window". Sending command-W to a
+# terminal because the user said "close the youtube tab" closes their shell.
+_TAB_SHORTCUTS = {"close_tab_or_window", "new_tab", "reopen_tab",
+                  "next_tab", "previous_tab"}
+_MEANS_TAB = re.compile(r"\btabs?\b", re.I)
+
+
+def site_in(utterance: str) -> str | None:
+    """The site named in an utterance, if it is one we know a URL for."""
+    low = utterance.lower()
+    for name, url in SITES.items():
+        spoken = name.replace("_", " ")
+        if re.search(r"\b" + re.escape(spoken) + r"\b", low):
+            return url
+    return None
+
+
+def aim_tab_command(shortcut: str, utterance: str) -> str | None:
+    """Put the right window in front before a tab shortcut fires.
+
+    "close the youtube tab" typed at a terminal closes the terminal. If the command is
+    about a tab, the browser has to be frontmost first -- and if it named a site, that
+    site's tab has to be the active one, or the wrong tab closes instead.
+    """
+    if shortcut not in _TAB_SHORTCUTS:
+        return None
+    front = frontmost_app()
+    named = site_in(utterance)
+    if not (_MEANS_TAB.search(utterance) or named):
+        return None                       # "close this window" means this window
+    if named:
+        # "the youtube tab" is ANY tab on youtube.com -- the one playing a video counts.
+        # tab_matches is deliberately stricter than that (a bare site means its
+        # homepage), which is right for opening and wrong for closing.
+        hit = focus_tab_on_host(split_url(named)[0]) or focus_existing_tab(named)
+        if hit:
+            focus_app(hit.browser or config.BROWSER, timeout=1.5)
+            return hit.browser
+        return None                       # no such tab: do not close a random one
+    if front in {b for b, _ in BROWSERS}:
+        return None                       # already in a browser; the shortcut is right
+    target = next((b for b, _ in sorted(BROWSERS, key=lambda x: x[0] != config.BROWSER)
+                   if app_running(b)), None)
+    if target and focus_app(target, timeout=1.5):
+        return target
+    return None
+
+
+def focus_tab_on_host(host: str) -> OpenResult | None:
+    """Raise any tab on `host`, preferring one in the space the user is already in."""
+    if not host:
+        return None
+
+    def pick(urls):
+        return next((i for i, u in enumerate(urls, start=1)
+                     if split_url(u)[0] == host), None)
+
+    running = running_apps()
+    if "Arc" in running:
+        index = pick(_tab_list(_TAB_URLS["arc_space"]))
+        if index is not None and _select("arc_space", "Arc", index):
+            return OpenResult("Arc", reused_tab=True)
+    for app, dialect in BROWSERS:
+        if app not in running or app == "Arc":
+            continue
+        index = pick(browser_tab_urls(app, dialect))
+        if index is not None and _select(dialect, app, index):
+            return OpenResult(app, reused_tab=True)
+    return None
 
 
 def focus_existing_tab(url: str) -> OpenResult | None:
@@ -683,6 +762,54 @@ def open_for_search(url: str, host: str) -> None:
         return
     if not open_in_running_browser(url):
         open_url(url)
+
+
+# "open the first video" -- YouTube's own markup first, then anything that looks like a
+# result link. Deduplicated by href because YouTube renders the thumbnail and the title
+# as two separate anchors to the same video, which would make "the second video" the
+# first one again.
+_NTH_JS = """
+(function(n){
+  var sel = ['ytd-video-renderer a#video-title',
+             'ytd-rich-item-renderer a#video-title-link',
+             'ytd-compact-video-renderer a#video-title',
+             'a#video-title-link', 'a#video-title',
+             'a[href*="/watch?v="]',
+             '#search a:has(h3)', '#rso a:has(h3)'];
+  var seen = {}, out = [];
+  for (var s = 0; s < sel.length; s++) {
+    var found;
+    try { found = document.querySelectorAll(sel[s]); } catch (e) { continue; }
+    for (var i = 0; i < found.length; i++) {
+      var a = found[i], href = a.href || '';
+      if (!href || seen[href]) continue;
+      var box = a.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      seen[href] = 1;
+      out.push({href: href, title: (a.title || a.textContent || '').trim().slice(0, 90),
+                top: box.top + window.scrollY});
+    }
+    if (out.length >= n) break;
+  }
+  out.sort(function(a, b){ return a.top - b.top; });
+  if (out.length < n) return 'few:' + out.length;
+  window.location.href = out[n - 1].href;
+  return 'ok:' + out[n - 1].title;
+})(@N@)
+"""
+
+
+def open_nth_result(n: int, timeout: int = 6) -> tuple[bool, str]:
+    """Open the nth result in the front tab. Returns (opened, what it was)."""
+    out = browser_js(_NTH_JS.replace("@N@", str(int(n))).strip(), timeout=timeout)
+    if not out:
+        return False, ""
+    text = str(out).strip().strip('"')
+    if text.startswith("ok:"):
+        return True, text[3:].strip()
+    if text.startswith("few:"):
+        return False, f"only {text[4:]} on the page"
+    return False, ""
 
 
 _YT_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "

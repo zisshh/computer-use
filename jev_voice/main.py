@@ -175,16 +175,24 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
         # got searched. A search with nothing in it is a question, not a command.
         if len(query) < 2 or query.lower() in _EMPTY_QUERY:
             return f"Search {a['engine'].replace('_', ' ')} for what?"
-        actions.web_search(a["engine"], query)
-        return f"Searching {a['engine'].replace('_', ' ')} for {query}."
+        # "Open YouTube" then "search for lofi" means search YouTube. Jev cannot know
+        # that -- it only sees the second sentence -- so the site already on screen
+        # decides, unless the user named an engine out loud.
+        engine = routing.search_engine(utterance, a.get("engine", "google"), ctx)
+        actions.web_search(engine, query)
+        return f"Searching {engine.replace('_', ' ')} for {query}."
     if act == "type_text":
         actions.type_text(a["text"])
         if a["submit"]:
             actions.press("enter")
         return "Done."
     if act == "shortcut":
+        # "close the youtube tab" said at a terminal used to close the terminal: the
+        # keystroke goes wherever the focus is. Aim it first.
+        aimed = actions.aim_tab_command(a["shortcut"], utterance)
         actions.press(a["shortcut"])
-        return a["shortcut"].replace("_", " ").capitalize() + "."
+        label = a["shortcut"].replace("_", " ").capitalize()
+        return f"{label} in {aimed}." if aimed else label + "."
     if act == "scroll":
         actions.scroll(a["direction"], a["amount"])
         return ""
@@ -277,6 +285,24 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
         print(f"  ⏩ already done while you were speaking: {utterance}")
         return True
     OVERLAY.set("thinking", f"{utterance}")
+    # "open the second video" has no action to map to -- Jev reads it as a play/pause on
+    # the current tab -- and the page already knows the answer, so it is settled here
+    # rather than spending a decision call on it.
+    nth = routing.nth_result(utterance)
+    if nth and not plan:
+        opened, what = actions.open_nth_result(nth)
+        if opened or what:
+            line = (f"Opening {what}." if opened and what
+                    else "Opening it." if opened else f"There are {what}.")
+            print(f"  → result #{nth}: {line}")
+            OVERLAY.set("done", what or line, revert_after=2.0)
+            print(f"  ◀ {line}")
+            if FEEDBACK == "voice":
+                speaker.say(line)
+            else:
+                ding(SOUND_DONE if opened else SOUND_FAIL)
+            return True
+        # Nothing clickable on this page: fall through and let Jev decide.
     plan = plan or brain.evaluate(utterance, ctx=ctx, whole=whole)
     print(f"  → {plan}")
     if plan.args.get("compound") and depth == 0:
@@ -455,6 +481,9 @@ QUIT_HINT = ("   quit: Ctrl-C in this terminal, or say \"stop listening\" "
 
 WAKE_WORDS = [w.strip().lower() for w in os.environ.get("WAKE_WORDS", "alfred,jarvis,alfie,alford,elfred").split(",") if w.strip()]
 FOLLOWUP_SECONDS = float(os.environ.get("FOLLOWUP_SECONDS", "8"))
+# On a call the name is required, so the window after one has to be long enough to
+# say a few things without repeating it before every sentence.
+CALL_FOLLOWUP_SECONDS = float(os.environ.get("CALL_FOLLOWUP_SECONDS", "60"))
 _WAKE_RE = re.compile(r"^\W*(?:hey|hi|ok|okay|yo)?\W*(?P<w>" + "|".join(map(re.escape, WAKE_WORDS)) + r")\b\W*", re.I)
 _WAKE_ANY = re.compile(r"\W*\b(?:" + "|".join(map(re.escape, WAKE_WORDS)) + r")\b\W*", re.I)
 
@@ -538,6 +567,11 @@ def mic_line(name: str) -> str:
     return line
 
 
+def followup_window() -> float:
+    """How long unnamed commands keep working after a named one."""
+    return CALL_FOLLOWUP_SECONDS if mics.on_a_call() else FOLLOWUP_SECONDS
+
+
 def run_smart(s: Session) -> None:
     """Hands-free. Mic is always open; only utterances that name the assistant (or follow
     a command within FOLLOWUP_SECONDS, or follow a Caps Lock tap) are sent to Jev."""
@@ -611,7 +645,7 @@ def run_smart(s: Session) -> None:
             followup = not addressed and time.monotonic() < armed["until"]
             if not cmd and addressed:        # just the name: acknowledge and wait for the command
                 ding(SOUND_START)
-                arm(FOLLOWUP_SECONDS)
+                arm(followup_window())
                 continue
             gate = None
             if not addressed:
@@ -664,7 +698,7 @@ def run_smart(s: Session) -> None:
             if s.speaker.speaking():
                 s.listener.pause(0.9)
             s.listener.drain()
-            arm(FOLLOWUP_SECONDS)
+            arm(followup_window())
             if not ok:
                 break
         finally:

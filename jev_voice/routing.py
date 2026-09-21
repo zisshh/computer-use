@@ -185,3 +185,71 @@ def entity_name_from(utterance: str) -> str:
 def is_site_not_app(name: str) -> bool:
     """True when a spoken name is a website, so it must open in the browser."""
     return name.strip().lower() in set(policy().get("site_is_not_an_app", []))
+
+
+# Sites that have their own search, keyed by the host in the address bar.
+_SEARCH_HOSTS = {
+    "youtube.com": "youtube", "youtu.be": "youtube",
+    "google.com": "google", "github.com": "github",
+    "amazon.in": "amazon", "amazon.com": "amazon",
+    "reddit.com": "reddit", "twitter.com": "twitter", "x.com": "twitter",
+    "maps.google.com": "google_maps", "spotify.com": "spotify",
+}
+_ENGINE_SPOKEN = {
+    "youtube": ("youtube", "you tube"), "google": ("google",), "github": ("github",),
+    "amazon": ("amazon",), "reddit": ("reddit",), "twitter": ("twitter", "x"),
+    "google_maps": ("maps", "google maps"), "spotify": ("spotify",),
+}
+
+
+def engine_said(utterance: str) -> str:
+    """The engine the user named out loud, or ''."""
+    low = " " + utterance.lower() + " "
+    for engine, words in _ENGINE_SPOKEN.items():
+        if any(f" {w} " in low for w in words):
+            return engine
+    return ""
+
+
+def search_engine(utterance: str, model_engine: str, ctx) -> str:
+    """Which site to search.
+
+    Jev only sees one sentence, so "search for lofi" right after "open youtube" looks
+    like a plain web search and goes to Google -- in whatever browser Google opens in.
+    What is already on screen answers it. A named engine still wins: saying "google
+    this" while on YouTube means Google.
+    """
+    said = engine_said(utterance)
+    if said:
+        return said
+    if model_engine and model_engine not in ("", "google"):
+        return model_engine           # Jev was specific about something else
+    url = (getattr(ctx, "tab_url", "") or "").lower()
+    if not url:
+        return model_engine or "google"
+    host = url.split("://", 1)[-1].split("/", 1)[0].removeprefix("www.")
+    for known, engine in _SEARCH_HOSTS.items():
+        if host == known or host.endswith("." + known):
+            return engine
+    return model_engine or "google"
+
+
+_ORDINALS = {"first": 1, "1st": 1, "one": 1, "second": 2, "2nd": 2, "two": 2,
+             "third": 3, "3rd": 3, "three": 3, "fourth": 4, "4th": 4, "four": 4,
+             "fifth": 5, "5th": 5, "five": 5, "sixth": 6, "6th": 6, "last": -1}
+_NTH = re.compile(
+    r"\b(?:open|play|click|watch|go\s+to)?\s*(?:the\s+)?"
+    r"(?P<ord>" + "|".join(_ORDINALS) + r")\s+"
+    r"(?P<what>video|one|result|link|item|song|track)\b", re.I)
+
+
+def nth_result(utterance: str) -> int:
+    """N for "open the third video", else 0.
+
+    Jev has no action for this -- it reads "play the second video" as a play/pause on
+    the current tab -- so the rule is owned here, like the media ladder.
+    """
+    match = _NTH.search(utterance)
+    if not match:
+        return 0
+    return _ORDINALS.get(match.group("ord").lower(), 0)
