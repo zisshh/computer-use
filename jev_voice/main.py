@@ -23,7 +23,7 @@ import numpy as np
 
 from typing import Any
 
-from . import actions, config, mics, route, routing, vad
+from . import actions, config, focus, mics, route, routing, vad
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
 from .context import media_playing as context_media_playing
@@ -91,7 +91,13 @@ def discord_voice(op: str, channel: str = "") -> str:
 
     if op == "join":
         if not channel:
-            return "Which voice channel?"
+            # "connect to a voice channel" names none. Asking back is the worst answer
+            # when the server usually has one obvious room; take the first visible one
+            # and say which, so a wrong guess is obvious and correctable.
+            visible = client.channels().get("voice", [])
+            if not visible:
+                return "I can't see a voice channel in the server that's open."
+            channel = visible[0]
         state = client.join_voice(channel)
         if state.connected:
             return "Connected to " + state.channel + "."
@@ -159,11 +165,13 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
     if act == "open_app":
         if a["app"] == "none":
             return "I don't see that app."
-        actions.open_app(a["app"])
+        actions.focus_app(a["app"], timeout=2.5)
+        focus.note(a["app"], via="open_app")
         return f"Opening {a['app']}."
     if act == "open_website":
         site = a["site"].replace("_", " ")
         where = actions.open_site(a["url"])
+        focus.note(where.browser or config.BROWSER, via="open_website")
         if where.switched_space:
             return f"Switching to {site} in your {where.switched_space} space."
         if where.reused_tab:
@@ -175,6 +183,15 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
         # got searched. A search with nothing in it is a question, not a command.
         if len(query) < 2 or query.lower() in _EMPTY_QUERY:
             return f"Search {a['engine'].replace('_', ' ')} for what?"
+        # "Open Spotify" then "search for Daniel Caesar" means search INSIDE Spotify.
+        # Jev only sees the second sentence, so the app the user last pointed at is
+        # what decides -- otherwise this becomes a web search and lands on the web
+        # player in a browser, which is not what "open Spotify" was asking for.
+        here = focus.current(ctx)
+        if (here in actions.SEARCHABLE_APPS and not routing.engine_said(utterance)
+                and actions.search_in_app(here, query)):
+            focus.note(here, via="search")
+            return f"Searching {here} for {query}."
         # "Open YouTube" then "search for lofi" means search YouTube. Jev cannot know
         # that -- it only sees the second sentence -- so the site already on screen
         # decides, unless the user named an engine out loud.
@@ -288,6 +305,24 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
     # "open the second video" has no action to map to -- Jev reads it as a play/pause on
     # the current tab -- and the page already knows the answer, so it is settled here
     # rather than spending a decision call on it.
+    # With Discord in focus, "mute me" means mute in Discord and "open general chat"
+    # means that channel. Jev has no way to know which app the sentence is about, and
+    # its general reading of "mute me" is the system volume.
+    if not plan and focus.current(ctx) == "Discord":
+        op, target = routing.discord_intent(utterance)
+        if op:
+            reply = (discord_text_channel(target) if op == "text"
+                     else discord_voice(op, target))
+            print(f"  → discord {op}{' ' + target if target else ''}")
+            OVERLAY.set("done", reply, revert_after=2.5)
+            print(f"  ◀ {reply}")
+            if FEEDBACK == "voice":
+                speaker.say(reply)
+            else:
+                ding(SOUND_DONE)
+            focus.note("Discord", via="discord")
+            return True
+
     nth = routing.nth_result(utterance)
     if nth and not plan:
         opened, what = actions.open_nth_result(nth)

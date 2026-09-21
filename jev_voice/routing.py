@@ -253,3 +253,62 @@ def nth_result(utterance: str) -> int:
     if not match:
         return 0
     return _ORDINALS.get(match.group("ord").lower(), 0)
+
+
+# ---------------------------------------------------------------- inside one app
+
+_DISCORD_OPS = [
+    ("unmute", re.compile(r"\bun\s?mute\b|\bunmute me\b", re.I)),
+    ("mute", re.compile(r"\bmute\b", re.I)),
+    ("undeafen", re.compile(r"\bun\s?deafen\b", re.I)),
+    ("deafen", re.compile(r"\bdeafen\b", re.I)),
+    ("leave", re.compile(r"\b(leave|disconnect|hang\s?up|drop)\b.*\b(call|voice|channel)\b"
+                         r"|\b(leave|disconnect|hang\s?up)\b\s*$", re.I)),
+]
+_JOIN_VOICE = re.compile(
+    r"\b(join|connect(?:\s+me)?(?:\s+to)?|hop\s+(?:in)?to|get\s+(?:me\s+)?(?:in)?to)\b"
+    r".{0,24}?\bvoice\b|\bvoice\s+channel\b", re.I)
+_TEXT_CHANNEL = re.compile(
+    r"\b(?:open|go\s+to|switch\s+to|show(?:\s+me)?)\b\s+"
+    r"(?:the\s+)?(?P<name>[\w' -]{2,32}?)\s*"
+    r"(?:text\s+)?(?:channel|chat)\b", re.I)
+_CHANNEL_NOISE = re.compile(r"^(a|an|the|some|any|another)$", re.I)
+
+
+def discord_intent(utterance: str) -> tuple[str, str]:
+    """(op, argument) for a Discord command that never says "Discord", else ("", "").
+
+    Once Discord is the app in focus, "mute me" means mute in Discord -- not the
+    system volume, which is what a general-purpose reading of it gives.
+    """
+    text = utterance.strip()
+    match = _TEXT_CHANNEL.search(text)
+    if match:
+        name = match.group("name").strip()
+        if name and not _CHANNEL_NOISE.match(name):
+            kind = "voice" if re.search(r"\bvoice\b", match.group(0), re.I) else "text"
+            return ("join" if kind == "voice" else "text", name)
+    if _JOIN_VOICE.search(text):
+        name = voice_channel_named(text)
+        return "join", name
+    for op, pattern in _DISCORD_OPS:
+        if pattern.search(text):
+            return op, ""
+    return "", ""
+
+
+# Words that are grammar, not a channel name. "connect me to a voice channel" used to
+# yield the channel "me to".
+_FILLER = {"a", "an", "the", "to", "me", "us", "in", "into", "on", "up", "some",
+           "any", "my", "our", "that", "this", "there", "please", "just"}
+
+
+def voice_channel_named(utterance: str) -> str:
+    """The voice channel named in "join the general voice channel", or ''."""
+    match = re.search(r"\b(?:join|connect|hop|get|go)\b[\w\s']{0,20}?"
+                      r"(?P<name>[\w'-]+(?:\s+[\w'-]+)?)\s+voice\b", utterance, re.I)
+    if not match:
+        return ""
+    words = [w for w in match.group("name").split() if w.lower() not in _FILLER]
+    name = " ".join(words).strip()
+    return "" if not name or _CHANNEL_NOISE.match(name) else name

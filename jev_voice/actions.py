@@ -89,12 +89,27 @@ def installed_apps() -> list[str]:
     return sorted(names, key=str.lower)
 
 
+# WhatsApp's localizedName() is "\u200eWhatsApp" -- it begins with a LEFT-TO-RIGHT
+# MARK. Invisible in every log and every error message, and it made "whatsapp" match
+# nothing: not running, no bundle id, and `tell application` fell through to launching
+# it, which is why "quit whatsapp" sat there for 35 seconds and then failed.
+_INVISIBLE = dict.fromkeys(
+    [0x200E, 0x200F, 0x200B, 0x200C, 0x200D, 0xFEFF,
+     0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+     0x2066, 0x2067, 0x2068, 0x2069])
+
+
+def app_name(raw: object) -> str:
+    """An app's display name with the direction and zero-width marks taken out."""
+    return str(raw or "").translate(_INVISIBLE).strip()
+
+
 def frontmost_app() -> str:
     try:
         from AppKit import NSWorkspace  # type: ignore
 
         app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        return str(app.localizedName()) if app else ""
+        return app_name(app.localizedName()) if app else ""
     except Exception:
         return ""
 
@@ -103,16 +118,56 @@ def open_app(name: str) -> None:
     subprocess.Popen(["open", "-a", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def activate(name: str) -> bool:
+    """Bring a RUNNING app to the front.
+
+    macOS stops a background process from stealing focus, and the restriction is not
+    the same for every API. Measured on this machine, raising Spotify, Discord and
+    Notion from a process that was not frontmost:
+
+        open -a                 failed for all three
+        NSRunningApplication    failed for all three
+        AppleScript `activate`  worked for all three
+
+    So the Apple Event is the one that works, and the others are kept only as a
+    fallback for the case where it is unavailable. This is why "open spotify" appeared
+    to work on a cold start and did nothing when Spotify was already running.
+    """
+    try:
+        osa.run(osa.with_timeout('tell application "' + _as_str(name)
+                                 + '" to activate', 3), timeout=4)
+        return True
+    except RuntimeError:
+        pass
+    key = name.casefold()
+    try:
+        from AppKit import (NSApplicationActivateAllWindows,  # type: ignore
+                            NSApplicationActivateIgnoringOtherApps, NSWorkspace)
+
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            if app_name(app.localizedName()).casefold() != key:
+                continue
+            if app.isHidden():
+                app.unhide()
+            return bool(app.activateWithOptions_(
+                NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows))
+    except Exception:
+        pass
+    return False
+
+
 def focus_app(name: str, timeout: float = 2.0) -> bool:
     """Open/activate an app and wait until it is frontmost (so keystrokes land in it)."""
     if frontmost_app().lower() == name.lower():
         return True
-    open_app(name)
+    if not activate(name):
+        open_app(name)                   # not running yet: Launch Services has to start it
     t0 = time.time()
     while time.time() - t0 < timeout:
         if frontmost_app().lower() == name.lower():
             time.sleep(0.15)  # let the window take key focus
             return True
+        activate(name)                   # it may have finished launching since
         time.sleep(0.05)
     return False
 
@@ -204,6 +259,47 @@ SEARCH_ENGINES: dict[str, str] = {
 }
 
 
+# Searching INSIDE an app, rather than searching the web about it. Each entry is what
+# to do once that app is the subject of the sentence.
+def search_in_spotify(query: str) -> bool:
+    """Put Spotify's own search results on screen.
+
+    Spotify's AppleScript dictionary has no search verb, but the `spotify:search:` URL
+    scheme drives the app's own search box -- which is what "open Spotify" then "search
+    for Daniel Caesar" has to mean. Sending that query to a browser instead lands on
+    the web player, signed out, in a window the user was not looking at.
+    """
+    # Hand the URL to Spotify by name. The default handler on this machine is Velja, a
+    # router, and it forwards spotify: links to the web player in a browser -- which is
+    # precisely the symptom: "search for Daniel Caesar" opening Spotify Web in Arc.
+    uri = spotify_search_uri(query)
+    if not (osa.open_url_in("Spotify", uri) or osa.open_url(uri)):
+        return False
+    focus_app("Spotify", timeout=2.5)
+    return frontmost_app() == "Spotify"
+
+
+def search_in_app(app: str, query: str) -> bool:
+    """Search within `app` when it has a way in. False when it has none."""
+    if app == "Spotify":
+        return search_in_spotify(query)
+    if app in ("Notion", "Obsidian", "Slack", "Discord", "Linear", "Finder"):
+        # These all put their own search behind the same chord, and all of them are
+        # focus-sensitive -- so the window has to be in front before the keys land.
+        if not focus_app(app, timeout=2.5):
+            return False
+        time.sleep(0.25)
+        press("find")
+        time.sleep(0.35)
+        type_text(query)
+        return True
+    return False
+
+
+SEARCHABLE_APPS = {"Spotify", "Notion", "Obsidian", "Slack", "Discord", "Linear",
+                   "Finder"}
+
+
 def web_search(engine: str, query: str) -> str | None:
     """Run the search in the browser the user already has open.
 
@@ -272,9 +368,42 @@ def quit_named_app(name: str) -> bool:
     frontmost, so "quit spotify" spoken from a terminal quit the terminal instead.
     Addressing the app by name cannot hit the wrong target.
     """
+    if not app_running(name):
+        return True                  # already gone; telling it to quit would LAUNCH it
+    # NSRunningApplication first. It is the API for this and it does not care whether
+    # the app speaks AppleScript -- WhatsApp is a Catalyst app that ignores `quit`
+    # entirely, so the Apple Event just sat there until its timeout and reported
+    # failure while the app carried on running.
+    key = name.casefold()
     try:
-        _osascript('tell application "' + _as_str(name) + '" to quit')
-        return True
+        from AppKit import NSWorkspace  # type: ignore
+
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            if app_name(app.localizedName()).casefold() != key:
+                continue
+            app.terminate()
+            for _ in range(30):              # terminate() is a request, not a promise
+                if app.isTerminated():
+                    _RUNNING_CACHE.pop("at", None)
+                    return True
+                time.sleep(0.1)
+            # Some apps decline: WhatsApp treats a quit as "close to the menu bar" and
+            # keeps running. The user asked for it to be gone, so insist -- but only
+            # after asking politely, and only for an app that is still there.
+            app.forceTerminate()
+            for _ in range(20):
+                if app.isTerminated():
+                    _RUNNING_CACHE.pop("at", None)
+                    return True
+                time.sleep(0.1)
+            break
+    except Exception:
+        pass
+    try:
+        _osascript(osa.with_timeout(
+            'tell application "' + _as_str(name) + '" to quit', 5), timeout=7)
+        _RUNNING_CACHE.pop("at", None)
+        return not app_running(name)
     except RuntimeError:
         return False
 
@@ -294,7 +423,7 @@ def running_apps(max_age: float = 2.0) -> frozenset[str]:
         from AppKit import NSWorkspace  # type: ignore
 
         names = frozenset(
-            str(a.localizedName() or "")
+            app_name(a.localizedName())
             for a in NSWorkspace.sharedWorkspace().runningApplications()
             if int(a.activationPolicy()) == 0
         )
@@ -322,7 +451,7 @@ def bundle_id_for(name: str) -> str:
         from AppKit import NSWorkspace  # type: ignore
 
         for a in NSWorkspace.sharedWorkspace().runningApplications():
-            if str(a.localizedName() or "").casefold() == key:
+            if app_name(a.localizedName()).casefold() == key:
                 _BUNDLE_IDS[key] = str(a.bundleIdentifier() or "")
                 return _BUNDLE_IDS[key]
     except Exception:
