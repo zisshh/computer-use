@@ -23,7 +23,9 @@ import numpy as np
 
 from typing import Any
 
-from . import actions, config, focus, ghostty, mics, route, routing, vad
+from . import actions, chat, config, focus, local, mics, recorder, route, routing, vad
+from .discord import text_channel as discord_text_channel
+from .discord import voice as discord_voice
 from .brain import Brain, Plan, split_compound
 from .context import ContextWatcher
 from .context import media_playing as context_media_playing
@@ -72,70 +74,6 @@ def quit_blocker(app: str) -> str:
         if playing[0] == app and playing[3]:
             return f"{app} is playing. Say \"quit {app.lower()} anyway\" if you mean it."
     return ""
-
-
-def discord_voice(op: str, channel: str = "") -> str:
-    """Discord voice ops, each confirmed by reading the voice panel back.
-
-    Discord fails silently -- a deep link to a server you are not in does nothing at
-    all -- so every one of these reports what it actually observed afterwards rather
-    than what it asked for.
-    """
-    from .discord import shared
-
-    client = shared()
-    if not client.running():
-        return "Discord isn't running."
-    if not client.arm(wait=2.0):
-        return "I can't read Discord's controls. Check Accessibility permission."
-
-    if op == "join":
-        if not channel:
-            # "connect to a voice channel" names none. Asking back is the worst answer
-            # when the server usually has one obvious room; take the first visible one
-            # and say which, so a wrong guess is obvious and correctable.
-            visible = client.channels().get("voice", [])
-            if not visible:
-                return "I can't see a voice channel in the server that's open."
-            channel = visible[0]
-        state = client.join_voice(channel)
-        if state.connected:
-            return "Connected to " + state.channel + "."
-        names = client.channels().get("voice", [])
-        if not any(channel.casefold() in n.casefold() for n in names):
-            seen = ", ".join(names) or "none"
-            return (f"I can't see a {channel} voice channel in the server that's open. "
-                    f"Visible voice channels: {seen}.")
-        return "I pressed " + channel + " but Discord didn't report a connection."
-    if op == "leave":
-        state = client.disconnect()
-        return "Left the call." if not state.connected else "I couldn't disconnect."
-    if op in ("mute", "unmute"):
-        state = client.set_mute(op == "mute")
-        return "Muted." if state.muted else "Unmuted."
-    if op in ("deafen", "undeafen"):
-        state = client.set_deafen(op == "deafen")
-        return "Deafened." if state.deafened else "Undeafened."
-    return "You're " + client.voice_state().describe() + "."
-
-
-def discord_text_channel(name: str) -> str:
-    """Open a Discord text channel by name, verified through the window title."""
-    from .discord import shared
-
-    client = shared()
-    if not client.running():
-        return "Discord isn't running."
-    client.arm(wait=2.0)
-    element = client.find(
-        lambda r, d, v: d.lower().startswith(name.lower() + " (text channel)"))
-    if element is None or not client.press(element):
-        return f"I can't see a {name} channel in the server that's open."
-    for _ in range(10):
-        time.sleep(0.2)
-        if client.context()[0].casefold() == name.casefold():
-            return "Opened #" + name + "."
-    return "I pressed #" + name + " but Discord didn't switch."
 
 
 def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
@@ -199,10 +137,25 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
         actions.web_search(engine, query)
         return f"Searching {engine.replace('_', ' ')} for {query}."
     if act == "type_text":
+        here = focus.current(ctx)
+        if a["submit"] and here in chat.APPS and _MEANS_SEND.match(utterance):
+            # "Send the text" comes back from Jev as: type the words "the text", press
+            # enter. That is how those two words once reached a real person. local.py
+            # catches the usual phrasings before Jev sees them; this catches the rest.
+            sent, who = chat.send(here)
+            return f"Sent to {who}." if sent else who
+        if a["submit"] and _MEANS_SEND.match(utterance):
+            # The same misreading with no chat in front would type the command's own
+            # words into whatever is -- a terminal, say -- and press enter.
+            return "There's no chat in front to send from."
         actions.type_text(a["text"])
         if a["submit"]:
             actions.press("enter")
         return "Done."
+    if act == "shortcut" and a["shortcut"] == "send_message" and focus.current(ctx) in chat.APPS:
+        # The shortcut is command-return, which sends mail and does nothing in a chat.
+        sent, who = chat.send(focus.current(ctx))
+        return f"Sent to {who}." if sent else who
     if act == "shortcut":
         # "close the youtube tab" said at a terminal used to close the terminal: the
         # keystroke goes wherever the focus is. Aim it first.
@@ -284,11 +237,16 @@ def execute(plan: Plan, dry: bool = False, ctx: Any = None) -> str:
 
 def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int = 0,
            plan: Plan | None = None, ctx: Any = None,
-           skip: set[str] | None = None, whole: str | None = None) -> bool:
+           skip: set[str] | None = None, whole: str | None = None,
+           unchecked: tuple[float, float] | None = None) -> bool:
     """Returns False when the user asked to stop.
 
     `skip` holds clauses already carried out speculatively while the user was still
     talking, so a finished sentence never repeats work that is already done.
+
+    `unchecked` is the (addressed, confidence) bar a sentence skipped because a local
+    rule claimed it. If the rule then does not carry it out after all (the page changed,
+    no chat by that name), Jev's plan still has to clear that bar before it runs.
     """
     skip = skip or set()
     kept = retracted(utterance)
@@ -302,66 +260,27 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
         print(f"  ⏩ already done while you were speaking: {utterance}")
         return True
     OVERLAY.set("thinking", f"{utterance}")
-    # "tell my claude code instance inside notion agency workspace to run the tests".
-    # Jev returns type_text holding that entire sentence, addressing and all, so this
-    # is settled here. Ghostty addresses a terminal by object reference, so the prompt
-    # cannot land in a window the user did not name.
-    if not plan and ghostty.ENABLED:
-        target, prompt = routing.claude_command(utterance)
-        if prompt:
-            term, why = ghostty.resolve(target)
-            if term is None:
-                reply = why                      # refuse, never guess between two
-            elif ghostty.send(term, prompt, enter=ghostty.SEND_ENTER):
-                reply = f"Sent to {term.label}."
-            else:
-                reply = f"I couldn't reach {term.label}."
-            print(f"  → claude: {reply}")
-            OVERLAY.set("done", reply, revert_after=2.5)
-            print(f"  ◀ {reply}")
-            if FEEDBACK == "voice":
-                speaker.say(reply)
-            else:
-                ding(SOUND_DONE if term is not None else SOUND_FAIL)
-            return True
-
-    # With Discord in focus, "mute me" means mute in Discord and "open general chat"
-    # means that channel. Jev has no way to know which app the sentence is about, and
-    # its general reading of "mute me" is the system volume.
-    if not plan and focus.current(ctx) == "Discord":
-        op, target = routing.discord_intent(utterance)
-        if op:
-            reply = (discord_text_channel(target) if op == "text"
-                     else discord_voice(op, target))
-            print(f"  → discord {op}{' ' + target if target else ''}")
-            OVERLAY.set("done", reply, revert_after=2.5)
-            print(f"  ◀ {reply}")
-            if FEEDBACK == "voice":
-                speaker.say(reply)
-            else:
-                ding(SOUND_DONE)
-            focus.note("Discord", via="discord")
-            return True
-
-    # "open the second video" has no action to map to -- Jev reads it as a play/pause on
-    # the current tab -- and the page already knows the answer, so it is settled here
-    # rather than spending a decision call on it.
-    nth = routing.nth_result(utterance)
-    if nth and not plan:
-        opened, what = actions.open_nth_result(nth)
-        if opened or what:
-            line = (f"Opening {what}." if opened and what
-                    else "Opening it." if opened else f"There are {what}.")
-            print(f"  → result #{nth}: {line}")
-            OVERLAY.set("done", what or line, revert_after=2.0)
-            print(f"  ◀ {line}")
-            if FEEDBACK == "voice":
-                speaker.say(line)
-            else:
-                ding(SOUND_DONE if opened else SOUND_FAIL)
-            return True
-        # Nothing clickable on this page: fall through and let Jev decide.
+    # Claude sessions, Discord, chats, YouTube and "the second result" are settled on this
+    # machine -- see local.py. This runs whether or not a plan came in with the sentence:
+    # hands-free mode always brings one (the verdict that let the sentence through), and
+    # while these rules waited for there to be none, they never ran.
+    done = local.settle(utterance, ctx, dry=dry)
+    if done is not None:
+        print(f"  → {done.what or 'local'}")
+        OVERLAY.set("done" if done.ok else "error", done.reply, revert_after=2.5)
+        print(f"  ◀ {done.reply}")
+        if FEEDBACK == "voice":
+            speaker.say(done.reply)
+        else:
+            ding(SOUND_DONE if done.ok else SOUND_FAIL)
+        return True
     plan = plan or brain.evaluate(utterance, ctx=ctx, whole=whole)
+    if unchecked and (plan.action == "none" or plan.args.get("addressed", 0) < unchecked[0]
+                      or plan.confidence < unchecked[1]):
+        print(f"   ·  {utterance}   (not ours after all, and not addressed: "
+              f"{plan.action} addressed={plan.args.get('addressed')})")
+        OVERLAY.set("idle", f"Ignored: {utterance}", revert_after=2.5)
+        return True
     print(f"  → {plan}")
     if plan.args.get("compound") and depth == 0:
         parts = split_compound(utterance)
@@ -437,6 +356,7 @@ def run_text(args: argparse.Namespace) -> None:
     handle(brain, speaker, args.text, args.dry_run, ctx=snapshot())
 
 
+_MEANS_SEND = re.compile(r"^\W*(?:please\s+|okay\s+|ok\s+)?(?:send|bhej)", re.I)
 _EMPTY_QUERY = frozenset({"for", "it", "this", "that", "something", "the", "a", "up",
                           "and", "on", "me"})
 
@@ -489,10 +409,12 @@ class Session:
         self.speculator = Speculator(self.brain, self.context, draft,
                                      dry=args.dry_run, on_action=_announce_early)
         self.listener.on_partial = self.speculator.feed_audio
+        self.listener.end_early = self.speculator.closed_command
         self.listener.on_speech_start = self._on_speech
         self.listener.media_active = context_media_playing
         self.listener.start()
         vad.prewarm()      # so the first utterance never pays for the model load
+        stt_correct("warm the dictionaries")    # 90ms of one-off loading, paid here
         mics.prewarm()     # the first scan costs 23ms; pay it now, not mid-sentence
 
     def _on_speech(self) -> None:
@@ -515,7 +437,9 @@ class Session:
         if not voiced:
             return True
         t0 = time.perf_counter()
-        text = stt_correct(self.stt.transcribe(pcm))
+        heard = self.stt.transcribe(pcm)
+        text = stt_correct(heard)
+        recorder.keep(pcm, heard, text, on_call=mics.on_a_call())
         self.speculator.seal()
         stt_ms = int((time.perf_counter() - t0) * 1000)
         if not text or is_noise(text):
@@ -563,6 +487,8 @@ UNNAMED_MIN_CONFIDENCE = float(os.environ.get("UNNAMED_MIN_CONFIDENCE", "0.7"))
 # still not automatically one: unchecked, half-caught speech ("for me.") got typed.
 FOLLOWUP_MIN_ADDRESSED = float(os.environ.get("FOLLOWUP_MIN_ADDRESSED", "0.5"))
 FOLLOWUP_MIN_CONFIDENCE = float(os.environ.get("FOLLOWUP_MIN_CONFIDENCE", "0.5"))
+# The bar for a sentence local.py claims, while something is playing into the room.
+LOCAL_MIN_ADDRESSED = float(os.environ.get("LOCAL_MIN_ADDRESSED", "0.4"))
 
 
 def _fuzzy_wake(word: str) -> bool:
@@ -661,6 +587,10 @@ def run_smart(s: Session) -> None:
     print(f"🔊 Out: {route.describe()}"
           + ("" if route.leaks_into_the_room()
              else " — nothing leaks into the mic, so music never gets in the way."))
+    if recorder.ENABLED:
+        print(f"💾 Keeping what you say in {recorder.root_dir()} so recognition can be "
+              f"measured on your voice.\n   Local only, newest {recorder.KEEP}, never "
+              f"during a call. SAVE_UTTERANCES=0 turns it off.")
     if mics.on_a_call():
         print(f"📞 {mics.describe()} has the mic too — macOS shares it, so Jev still "
               f"hears you.\n   While a call is up, say the name first.")
@@ -690,7 +620,9 @@ def run_smart(s: Session) -> None:
                 continue
             OVERLAY.set("heard", "Transcribing…")
             t0 = time.perf_counter()
-            text = stt_correct(s.stt.transcribe(pcm))
+            heard = s.stt.transcribe(pcm)
+            text = stt_correct(heard)
+            recorder.keep(pcm, heard, text, on_call=mics.on_a_call())
             s.speculator.seal()           # the sentence exists now; stop guessing at it
             stt_ms = int((time.perf_counter() - t0) * 1000)
             # Whisper never returns nothing: given a cough or a bar of music it
@@ -721,8 +653,8 @@ def run_smart(s: Session) -> None:
                     OVERLAY.set("idle", f"On a call — say the name: {text}",
                                 revert_after=2.0)
                     continue
-                playing = (not followup and route.leaks_into_the_room()
-                           and context_media_playing())
+                talking = route.leaks_into_the_room() and context_media_playing()
+                playing = not followup and talking
                 if WAKE_WHEN_PLAYING and playing:
                     print(f"   ·  {text}   (music playing: say the name first)")
                     OVERLAY.set("idle", f"Say the name: {text}", revert_after=2.0)
@@ -737,22 +669,40 @@ def run_smart(s: Session) -> None:
                 if playing:
                     min_addressed = max(min_addressed, PLAYING_MIN_ADDRESSED)
                     min_confidence = max(min_confidence, PLAYING_MIN_CONFIDENCE)
-                gate = s.brain.evaluate(text, ctx=s.context.latest())
-                ok_cmd = (gate.args.get("addressed", 0) >= min_addressed
-                          and gate.confidence >= min_confidence)
-                if ok_cmd and gate.action == "none":
-                    print(f"   ·  {text}   (Jev: none, addressed={gate.args.get('addressed')} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
-                    continue
-                if not ok_cmd:
-                    print(f"   ·  {text}   (ignored: addressed={gate.args.get('addressed')} {gate.action} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
-                    OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
-                    continue
+                # A sentence this machine settles itself -- "play the second video",
+                # "send it", "open my chat with Maa" -- is a command by its shape and by
+                # what is on screen, and Jev is a poor judge of it: it has no action for
+                # any of them, so it scored "Send." 0.59, "Pause." 0.59 and "Mute me."
+                # 0.51 and they were dropped. With nothing playing into the room nobody
+                # else can have said it, so it goes straight through -- no decision call,
+                # which is most of a second. With a video talking in the room, Jev still
+                # judges whether it was aimed at the computer, against a lower bar.
+                # The follow-up window lowers the bar, but it does not make a video that is
+                # talking into the room, or the other side of a call, into the user.
+                ours = local.claims(text, s.context.latest())
+                if not ours or talking or mics.on_a_call():
+                    gate = s.brain.evaluate(text, ctx=s.context.latest())
+                    if ours:
+                        min_addressed = min(min_addressed, LOCAL_MIN_ADDRESSED)
+                        min_confidence = 0.0
+                    ok_cmd = (gate.args.get("addressed", 0) >= min_addressed
+                              and gate.confidence >= min_confidence)
+                    if ok_cmd and gate.action == "none" and not ours:
+                        print(f"   ·  {text}   (Jev: none, addressed={gate.args.get('addressed')} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
+                        continue
+                    if not ok_cmd:
+                        print(f"   ·  {text}   (ignored: addressed={gate.args.get('addressed')} {gate.action} conf={gate.confidence:.2f}, stt {stt_ms}ms)")
+                        OVERLAY.set("idle", f"Ignored: {text}", revert_after=2.5)
+                        continue
                 cmd = text
-            tag = f", addressed={gate.args.get('addressed')}" if gate else ""
+            tag = (f", addressed={gate.args.get('addressed')}" if gate
+                   else "" if addressed else ", local")
             print(f"🗣  {cmd}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms{tag})")
             s.listener.pause(0.3)
+            skipped_gate = not addressed and gate is None
             ok = handle(s.brain, s.speaker, cmd, s.args.dry_run, plan=gate,
-                        ctx=s.context.latest(), skip=s.speculator.consumed())
+                        ctx=s.context.latest(), skip=s.speculator.consumed(),
+                        unchecked=(min_addressed, min_confidence) if skipped_gate else None)
             if s.speaker.speaking():
                 s.listener.pause(0.9)
             s.listener.drain()

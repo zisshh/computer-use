@@ -181,7 +181,7 @@ def open_url(url: str, activate: bool = True) -> None:
     osa.open_url(url, activate=activate)
 
 
-_NEW_TAB_SCRIPTS: dict[str, str] = {'arc': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to make new tab with properties {URL:"@URL@"}\n  activate\n  return "ok"\nend tell', 'chromium': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to make new tab with properties {URL:"@URL@"}\n  activate\n  return "ok"\nend tell', 'safari': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to set current tab to (make new tab with properties {URL:"@URL@"})\n  activate\n  return "ok"\nend tell'}
+_NEW_TAB_SCRIPTS: dict[str, str] = {'arc': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell @ARCWIN@ to make new tab with properties {URL:"@URL@"}\n  activate\n  return "ok"\nend tell', 'chromium': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to make new tab with properties {URL:"@URL@"}\n  activate\n  return "ok"\nend tell', 'safari': 'tell application "@APP@"\n  if (count of windows) is 0 then return "no"\n  tell front window to set current tab to (make new tab with properties {URL:"@URL@"})\n  activate\n  return "ok"\nend tell'}
 
 
 def open_in_running_browser(url: str) -> str | None:
@@ -253,6 +253,9 @@ SEARCH_ENGINES: dict[str, str] = {
     "github": "https://github.com/search?q={q}",
     "google_maps": "https://www.google.com/maps/search/{q}",
     "twitter_x": "https://x.com/search?q={q}",
+    "twitter": "https://x.com/search?q={q}",      # the name routing uses for x.com
+    "netflix": "https://www.netflix.com/search?q={q}",
+    "instagram": "https://www.instagram.com/explore/search/keyword/?q={q}",
     "reddit": "https://www.reddit.com/search/?q={q}",
     "spotify": "https://open.spotify.com/search/{q}",
     "perplexity": "https://www.perplexity.ai/search?q={q}",
@@ -272,7 +275,7 @@ def search_in_spotify(query: str) -> bool:
     # Hand the URL to Spotify by name. The default handler on this machine is Velja, a
     # router, and it forwards spotify: links to the web player in a browser -- which is
     # precisely the symptom: "search for Daniel Caesar" opening Spotify Web in Arc.
-    uri = spotify_search_uri(query)
+    uri = spotify_search_uri(music_query(query))
     if not (osa.open_url_in("Spotify", uri) or osa.open_url(uri)):
         return False
     focus_app("Spotify", timeout=2.5)
@@ -474,12 +477,6 @@ def app_running(name: str) -> bool:
 # Arc only ever searches its ACTIVE space. Its tabs are grouped into spaces, and
 # selecting a tab in another space drags the browser there -- asking for YouTube
 # should hand you YouTube where you are, not relocate your whole workspace.
-_TAB_SCRIPTS: dict[str, str] = {
-    "chromium": 'tell application "@APP@"\n  repeat with w in windows\n    set i to 0\n    repeat with t in tabs of w\n      set i to i + 1\n      if URL of t contains "@NEEDLE@" then\n        set active tab index of w to i\n        set index of w to 1\n        activate\n        return "ok"\n      end if\n    end repeat\n  end repeat\nend tell\nreturn "no"',
-    "arc": 'tell application "@APP@"\n  repeat with w in windows\n    repeat with t in tabs of (active space of w)\n      if URL of t contains "@NEEDLE@" then\n        select t\n        activate\n        return "ok"\n      end if\n    end repeat\n  end repeat\nend tell\nreturn "no"',
-    "safari": 'tell application "@APP@"\n  repeat with w in windows\n    repeat with t in tabs of w\n      if URL of t contains "@NEEDLE@" then\n        set current tab of w to t\n        set index of w to 1\n        activate\n        return "ok"\n      end if\n    end repeat\n  end repeat\nend tell\nreturn "no"',
-}
-
 BROWSERS: list[tuple[str, str]] = [
     ("Arc", "arc"),
     ("Google Chrome", "chromium"),
@@ -493,17 +490,17 @@ BROWSERS: list[tuple[str, str]] = [
 # One list-returning Apple Event per question. The obvious `repeat with t in tabs`
 # form costs three events per tab -- 1419ms on this 59-tab window, versus 146ms here.
 _TAB_URLS: dict[str, str] = {
-    "arc_space": 'tell application "Arc" to tell front window to return URL of every tab of (active space of it)',
-    "arc_window": 'tell application "Arc" to return URL of every tab of front window',
+    "arc_space": 'tell application "Arc" to tell @ARCWIN@ to return URL of every tab of (active space of it)',
+    "arc_window": 'tell application "Arc" to return URL of every tab of @ARCWIN@',
     "chromium": 'tell application "@APP@" to return URL of every tab of front window',
     "safari": 'tell application "@APP@" to return URL of every tab of front window',
 }
 
-_ARC_LOCATIONS = 'tell application "Arc" to return location of every tab of front window'
+_ARC_LOCATIONS = 'tell application "Arc" to return location of every tab of @ARCWIN@'
 
 _SELECT_TAB_SCRIPTS: dict[str, str] = {
-    "arc_space": 'tell application "Arc"\n  tell front window to select tab @N@ of (active space of it)\n  activate\n  return "ok"\nend tell',
-    "arc_window": 'tell application "Arc"\n  tell front window to select tab @N@\n  activate\n  return "ok"\nend tell',
+    "arc_space": 'tell application "Arc"\n  tell @ARCWIN@ to select tab @N@ of (active space of it)\n  activate\n  return "ok"\nend tell',
+    "arc_window": 'tell application "Arc"\n  tell @ARCWIN@ to select tab @N@\n  activate\n  return "ok"\nend tell',
     "chromium": 'tell application "@APP@"\n  tell front window\n    set active tab index to @N@\n    set index to 1\n  end tell\n  activate\n  return "ok"\nend tell',
     "safari": 'tell application "@APP@"\n  tell front window to set current tab to tab @N@\n  activate\n  return "ok"\nend tell',
 }
@@ -617,28 +614,33 @@ def _focus_arc_tab(url: str) -> OpenResult | None:
     best = min(hits, key=rank)
     # A tab in another space is not worth being moved to another space for. Saying
     # "open youtube" and being thrown into a different Arc space loses the window the
-    # user was working in; opening it here costs one duplicate tab. Favourites are
-    # exempt because they are visible from every space, so raising one moves nothing.
-    if STAY_IN_SPACE and rank(best)[0] != 0:
+    # user was working in; opening it here costs one duplicate tab.
+    if STAY_IN_SPACE and (rank(best)[0] != 0 or url in _MOVES_US):
         return None
-    before = ""
-    if rank(best)[0] != 0:          # only a favourite is guaranteed not to move us
-        try:
-            before = _osascript(
-                'tell application "Arc" to return title of active space of front window')
-        except RuntimeError:
-            before = ""
+    before = _arc_space_title()
     if not _select("arc_window", "Arc", best):
         return None
-    after = ""
-    if before:
-        try:
-            after = _osascript(
-                'tell application "Arc" to return title of active space of front window')
-        except RuntimeError:
-            after = ""
-    return OpenResult("Arc", reused_tab=True,
-                      switched_space=after if after and after != before else "")
+    after = _arc_space_title()
+    moved = bool(before and after and after != before)
+    if moved and STAY_IN_SPACE:
+        # Favourites were assumed to be visible from every space, so raising one could
+        # never move anybody. It did: "open youtube" in `study` landed in `work`. So the
+        # move is measured rather than assumed, undone, and remembered -- the caller
+        # opens the page here instead, and this favourite is not tried again.
+        _MOVES_US.add(url)
+        switch_arc_space(before)
+        return None
+    return OpenResult("Arc", reused_tab=True, switched_space=after if moved else "")
+
+
+def _arc_space_title() -> str:
+    try:
+        return _osascript('tell application "Arc" to return title of active space of @ARCWIN@')
+    except RuntimeError:
+        return ""
+
+
+_MOVES_US: set[str] = set()
 
 
 STAY_IN_SPACE = os.environ.get("ARC_STAY_IN_SPACE", "1") not in ("0", "false", "no")
@@ -763,18 +765,23 @@ def open_site(url: str) -> OpenResult:
 # ---------------------------------------------------------------- browser javascript
 
 _JS_WRAPPERS = {
-    "arc": 'tell application "@APP@" to tell front window to tell active tab to return execute javascript "@JS@"',
+    "arc": 'tell application "@APP@" to tell @ARCWIN@ to tell active tab to return execute javascript "@JS@"',
     "chromium": 'tell application "@APP@" to tell front window to tell active tab to execute javascript "@JS@"',
     "safari": 'tell application "@APP@" to tell front window to do JavaScript "@JS@" in current tab',
 }
 
 
-def browser_js(script: str, app: str | None = None, timeout: int = 5) -> str | None:
+def browser_js(script: str, app: str | None = None, timeout: int = 5,
+               raw: bool = False) -> str | None:
     """Run JavaScript in the focused tab of a running browser. Returns its value.
 
     This is how a web player gets controlled without touching the keyboard: the page is
     already open, so play/pause/next is one function call rather than a guess about which
     app owns the media keys.
+
+    Arc hands a string back JSON-encoded, quotes and all. Stripping the outer pair is
+    enough for a bare word; `raw` leaves it alone for a caller that returns JSON and
+    needs the escaping intact to decode it.
     """
     running = running_apps()
     candidates = [(a, d) for a, d in BROWSERS if (app is None or a == app) and a in running]
@@ -786,7 +793,8 @@ def browser_js(script: str, app: str | None = None, timeout: int = 5) -> str | N
         try:
             # A tab that is still loading blocks the Apple Event until its default 60s
             # timeout, which would stall the worker thread. Bound it hard.
-            return _osascript(wrapper, timeout=timeout).strip().strip('"')
+            out = _osascript(wrapper, timeout=timeout).strip()
+            return out if raw else out.strip('"')
         except RuntimeError:
             continue
     return None
@@ -883,7 +891,7 @@ def open_for_search(url: str, host: str) -> None:
     """
     try:
         current = _osascript(
-            'tell application "Arc" to return URL of active tab of front window', timeout=5)
+            'tell application "Arc" to return URL of active tab of @ARCWIN@', timeout=5)
     except RuntimeError:
         current = ""
     if current and split_url(current)[0] == host:
@@ -1010,6 +1018,7 @@ def _nudge_play(delay: float = 2.0) -> None:
 
 def play_on_youtube(query: str) -> str:
     """Play a named song on YouTube, in the browser the user is already in."""
+    query = music_query(query)
     hits = youtube_search(query)
     if hits:
         video_id, title = _best_match(query, hits)
@@ -1122,6 +1131,28 @@ def hinglish_query(spoken: str) -> str:
     return out or spoken
 
 
+def music_query(spoken: str) -> str:
+    """What to search a music service for: the wrapper off, the artist's name put right.
+
+    Whisper writes Indian names as the English they sound like -- "Karan Aujla" arrives
+    as "Quran Aujla" or "corona jula", "Seedhe Maut" as "sidemot" -- and a music search
+    for those finds nothing. Here the words are known to be about music, so a name can be
+    put back far more boldly than it could in a sentence that might be about anything.
+    """
+    cleaned = hinglish_query(spoken)
+    try:
+        from . import artists
+
+        fixed = artists.resolve(cleaned)
+        low = fixed.casefold()
+        for artist in artists.load():
+            if artist.name.casefold() in low:
+                artists.note(artist.name)   # asked-for artists lead whisper's prompt
+        return fixed
+    except Exception:
+        return cleaned
+
+
 # "a song by X" names no track. In Hinglish the generic word is usually what survives
 # the strip, so searching for a track called "gaana" would find the wrong thing.
 _GENERIC_TRACK = re.compile(r"^(?:a\s+|the\s+|some\s+)?"
@@ -1152,7 +1183,7 @@ def _spotify_track_uri(query: str) -> str | None:
     token = _spotify_token_get()
     if not token:
         return None
-    kind, cleaned = spotify_kind(hinglish_query(query))
+    kind, cleaned = spotify_kind(music_query(query))
     try:
         import httpx
 
@@ -1237,9 +1268,31 @@ def play_named_track(query: str, service: str = "spotify") -> str:
 
 # ---------------------------------------------------------------- keyboard
 
+# Arc keeps a hidden window with no tabs in it, named after a space. Whenever it sits at
+# index 1 it IS `front window`: `active tab` errors, every tab list comes back empty, and
+# JavaScript has nowhere to run. That is what "play the first video" doing nothing was,
+# and the blank screen context, and part of "open youtube" landing somewhere else --
+# measured 2026-09-21 with two windows: "(5) YouTube" visible, "study" invisible, 0 tabs.
+# So Arc scripts name the window the user can actually see. `front window` stays as the
+# fallback for the case where nothing reports itself visible.
+ARC_WINDOW = "@ARCWIN@"
+_ARC_WINDOWS = ("(first window whose visible is true)", "front window")
+_NO_SUCH_WINDOW = ("Can\u2019t get window", "Can't get window", "Invalid index")
+
+
 def _osascript(script: str, timeout: int | None = None) -> str:
     """Run AppleScript in-process. Kept as the single chokepoint for every app call."""
-    return osa.run(script, timeout=timeout)
+    if ARC_WINDOW not in script:
+        return osa.run(script, timeout=timeout)
+    try:
+        return osa.run(script.replace(ARC_WINDOW, _ARC_WINDOWS[0]), timeout=timeout)
+    except RuntimeError as exc:
+        # Only a window that could not be found is worth a second try. A page that
+        # timed out may already have run its JavaScript, and running it twice would
+        # navigate twice.
+        if not any(mark in str(exc) for mark in _NO_SUCH_WINDOW):
+            raise
+    return osa.run(script.replace(ARC_WINDOW, _ARC_WINDOWS[1]), timeout=timeout)
 
 
 def type_text(text: str) -> None:
@@ -1612,7 +1665,7 @@ def switch_arc_space(title: str) -> bool:
         return False
     try:
         _osascript('tell application "Arc"\n'
-                   '  tell front window to focus (first space whose title is "'
+                   '  tell @ARCWIN@ to focus (first space whose title is "'
                    + _as_str(title) + '")\n'
                    "  activate\n"
                    "end tell")

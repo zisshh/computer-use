@@ -63,6 +63,31 @@ longer toggles capitals while the remap is installed.
 | "take a screenshot", "open my downloads", "lock the screen", "toggle dark mode" | misc |
 | "open notes and type buy milk and press enter" | compound: Jev flags it, code splits it, each step runs in order |
 
+### Settled on this machine, without asking Jev
+
+Jev picks from a fixed list of actions, and none of them means "the second video", "her
+channel", "my chat with Maa" or "send". Those sentences are read straight off the page or
+the chat list instead (`jev_voice/local.py`), which also makes them the fastest commands
+there are: no network, no decision call.
+
+| Say | Does |
+| --- | --- |
+| "open spotify", "open youtube", "spotify kholo" | an app or site by its exact name opens at once |
+| on YouTube: "open david dobrik" | finds the channel (the most-subscribed one of that name) and opens its **Videos** tab, newest first |
+| on YouTube: "play the first video", "click the third one", "play the second short", "pehla video chalao" | the Nth card as you read them: left to right, then down; Shorts and ads are not counted as videos |
+| on a channel: "go to shorts", "open the playlists tab" | that section of the same channel |
+| on YouTube: "search for sam sulek", "pause", "resume", "next video", "go back" | YouTube's own search and player |
+| on YouTube: "go to the youtube homepage", "go home" | back to the home feed. Room talk ("go to sleep", "open full screen") is not read as a channel; a channel whose name is all ordinary words needs "channel" said ("open dude perfect channel") unless whisper capitalised it |
+| in the browser: "click on div", "open div", "open the reels section", "click the subscribe button", "div pe click karo" | clicks the thing on the page with that name: a Netflix profile, a sidebar tab, a button. Read straight from the page in ~5 ms. What is on screen beats your Notion pages, but only when the page has something called that. "Dev" finds "Div". Delete/buy/send-type buttons need their whole name and the word "click" |
+| "open my chat with ma on whatsapp", "open the ziiro group" | opens that chat in WhatsApp or Messages |
+| in a chat: "open rudra" | a bare name means a chat while a chat app is in front |
+| in a chat: "type on my way", "type on my way and send it" | types into the compose box, and checks that is where it went |
+| in a chat: "send", "send it", "send the text", "bhej do" | sends what is typed. Never types anything; refuses an empty box; says who it went to |
+| "open my chat with ma on whatsapp and send her text how is she" | the whole thing in one go: open, type, check, send |
+
+Sending stops short whenever something is off: a name that only roughly matched gets
+the message typed but not sent, and so does a chat that already had a draft in it.
+
 ## How the Jev layer works (`jev_voice/brain.py`)
 
 One request per utterance with ~15 speculative questions evaluated in parallel:
@@ -118,6 +143,13 @@ jev_voice/
   hotkey.py   Caps Lock (remapped to F18) global key tap
   overlay.py  floating transcription pill (AppKit)
   persona.py  butler / cowboy phrasing
+  local.py    commands settled here, before Jev: who claims a sentence, and doing it
+  youtube.py  channels, the Nth video on the page, a channel's sections
+  chat.py     WhatsApp / Messages through accessibility: open a chat, type, send
+  chat_intent.py  the parser for messaging sentences (pure)
+  artists.py  Indian artist names as whisper mishears them, and how to put them back
+  verbs.py    the command verb, heard through an accent ("diap hello" -> "type hello")
+  recorder.py keeps utterances locally so recognition can be measured on your voice
 scripts/
   setup.sh    one-shot install: deps, model, Caps Lock remap, launcher, permissions
 ```

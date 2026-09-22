@@ -15,6 +15,7 @@ dependencies = [
     # The speech gate. Without it the energy detector opens the mic on any loud room.
     "silero-vad>=5.1.2",
     "onnxruntime>=1.20",
+    "parakeet-mlx>=0.5.2",
 ]
 
 [project.scripts]

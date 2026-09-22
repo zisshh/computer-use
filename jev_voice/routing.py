@@ -194,11 +194,13 @@ _SEARCH_HOSTS = {
     "amazon.in": "amazon", "amazon.com": "amazon",
     "reddit.com": "reddit", "twitter.com": "twitter", "x.com": "twitter",
     "maps.google.com": "google_maps", "spotify.com": "spotify",
+    "netflix.com": "netflix", "instagram.com": "instagram",
 }
 _ENGINE_SPOKEN = {
     "youtube": ("youtube", "you tube"), "google": ("google",), "github": ("github",),
     "amazon": ("amazon",), "reddit": ("reddit",), "twitter": ("twitter", "x"),
     "google_maps": ("maps", "google maps"), "spotify": ("spotify",),
+    "netflix": ("netflix",), "instagram": ("instagram", "insta"),
 }
 
 

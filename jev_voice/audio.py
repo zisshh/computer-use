@@ -37,6 +37,18 @@ class VADConfig:
     # from the voice in the room. Neutral until the detector itself can.
     media_mult: float = float(os.environ.get("VAD_MEDIA_MULT", "1.0"))
     floor_min: float = float(os.environ.get("VAD_FLOOR_MIN", "0.004"))
+    # The end-of-sentence wait is the largest fixed cost in every command: 550ms of
+    # silence before anything may happen. It exists because a pause might be mid-sentence
+    # -- but "pause", "send it" and "play the second video" are whole the moment they are
+    # said. So during a pause the words so far are transcribed (probe_ms), and once they
+    # already make a complete command of the closed kind, this much silence is enough.
+    early_end_ms: int = int(os.environ.get("VAD_EARLY_END_MS", "250"))
+    probe_ms: int = int(os.environ.get("VAD_PROBE_MS", "120"))
+    # Over a video that is talking out of the speakers the room is never silent, so a
+    # sentence only ended at max_speech_ms: "pause" took twelve seconds, twice. The voice
+    # at the mic is well above the speakers, so while media plays, falling this far below
+    # the loudest the sentence has been counts as silence (0.35 is about -9 dB).
+    media_drop: float = float(os.environ.get("VAD_MEDIA_DROP", "0.35"))
 
 
 def _auto_mic(devices) -> str | None:
@@ -59,14 +71,18 @@ def _auto_mic(devices) -> str | None:
 def pick_device(want: str | None) -> tuple[int | None, str]:
     """Resolve a microphone by name fragment. Returns (index, human name).
 
-    "auto" (the default) follows whatever the user chose in System Settings, and only
-    overrides it in the one case that measurably hurts: the built-in microphone while
-    the built-in speakers are playing, where it hears playback about 7 dB louder than a
-    desk microphone does.
+    A pinned name wins over System Settings, which is the point: macOS makes AirPods
+    the default input the moment they connect, and recording from them drops them into
+    their call profile, which takes music quality down with it. The stream is opened
+    once and stays bound to this device, so AirPods connecting mid-session change
+    nothing.
 
-    Pinning a specific microphone is worse than it sounds. Wearing AirPods and speaking
-    into them while the app listens to a condenser across the desk produces exactly the
-    symptom it looks like a recognition bug: every word slightly wrong.
+    The one cost of pinning: the desk mic has to be near you. Talking into AirPods while
+    a condenser across the room does the listening makes every word slightly wrong.
+
+    "auto" follows System Settings instead, overriding it only for the built-in mic
+    while the built-in speakers play, where it hears playback about 7 dB louder than a
+    desk mic does.
     """
     devices = sd.query_devices()
     if want and want.strip().lower() in ("auto", "default"):
@@ -85,6 +101,12 @@ def pick_device(want: str | None) -> tuple[int | None, str]:
 
 
 
+# Half-life 3 s, measured: 1 s let the peak sink to a talking video's own level, and a
+# real "pause" over a video went from ending at 2.3 s to 6.1 s; never fading cut a
+# normal-voiced command short after a shouted first word.
+_PEAK_FADE = 0.5 ** (FRAME_MS / 1000 / 3.0)
+
+
 class Listener:
     """Yields float32 16 kHz mono utterances. Call `pause()` while the assistant speaks."""
 
@@ -99,6 +121,9 @@ class Listener:
         self.on_partial = None
         # Optional predicate: is audio playing out of the speakers right now?
         self.media_active = None
+        # Optional predicate, given how many samples of the utterance are speech: are
+        # the words so far already a whole command? See VADConfig.early_end_ms.
+        self.end_early = None
         self.stream = sd.InputStream(
             samplerate=config.SAMPLE_RATE, channels=1, dtype="float32", blocksize=FRAME,
             device=device, callback=self._cb,
@@ -124,6 +149,14 @@ class Listener:
             except queue.Empty:
                 break
 
+    def _media_now(self) -> bool:
+        if self.media_active is None:
+            return False
+        try:
+            return bool(self.media_active())
+        except Exception:
+            return False
+
     def next_utterance(self) -> np.ndarray:
         v = self.vad
         pre_n = v.pre_roll_ms // FRAME_MS
@@ -133,6 +166,8 @@ class Listener:
         silence_ms = 0
         in_speech = False
         since_partial = 0
+        over_media = False
+        level = peak = 0.0
         while True:
             # A timeout matters: CPython cannot run a signal handler while the main
             # thread sits in an untimed queue wait, so an untimed get() swallows Ctrl-C.
@@ -166,6 +201,8 @@ class Listener:
                     speech = list(ring)
                     silence_ms = 0
                     since_partial = 0
+                    over_media = self._media_now()
+                    level = peak = 0.0
                     if self.on_speech_start:
                         try:
                             self.on_speech_start()
@@ -173,7 +210,12 @@ class Listener:
                             pass
                 continue
             speech.append(frame)
-            silence_ms = 0 if loud else silence_ms + FRAME_MS
+            level = rms if not level else 0.7 * level + 0.3 * rms
+            # The peak fades, so one shouted word does not turn the normal-voiced rest of
+            # the sentence into "silence".
+            peak = max(level, peak * _PEAK_FADE)
+            voiced = loud and not (over_media and level < peak * v.media_drop)
+            silence_ms = 0 if voiced else silence_ms + FRAME_MS
             dur = len(speech) * FRAME_MS
             since_partial += FRAME_MS
             if self.on_partial and since_partial >= v.partial_ms and dur >= v.min_speech_ms:
@@ -183,7 +225,19 @@ class Listener:
                     self.on_partial(np.concatenate(speech))
                 except Exception:
                     pass
-            if silence_ms >= v.end_silence_ms or dur >= v.max_speech_ms:
+            if (self.on_partial and silence_ms and silence_ms % v.probe_ms == 0
+                    and dur - silence_ms >= v.min_speech_ms):
+                try:
+                    self.on_partial(np.concatenate(speech))     # what was just said, now
+                except Exception:
+                    pass
+            early = False
+            if self.end_early and v.early_end_ms <= silence_ms < v.end_silence_ms:
+                try:
+                    early = bool(self.end_early((len(speech) - silence_ms // FRAME_MS) * FRAME))
+                except Exception:
+                    early = False
+            if early or silence_ms >= v.end_silence_ms or dur >= v.max_speech_ms:
                 if dur - silence_ms >= v.min_speech_ms:
                     return np.concatenate(speech)
                 ring.clear(); speech.clear(); in_speech = False; loud_run = 0

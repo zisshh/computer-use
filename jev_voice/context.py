@@ -20,7 +20,7 @@ from . import actions, osa
 
 # Browsers we can ask for a current tab, in the order we trust them.
 _TAB_QUERIES: dict[str, str] = {
-    "arc": 'tell application "@APP@" to tell front window to return (URL of active tab) & "\\n" & (title of active tab)',
+    "arc": 'tell application "@APP@" to tell @ARCWIN@ to return (URL of active tab) & "\\n" & (title of active tab)',
     "chromium": 'tell application "@APP@" to tell front window to return (URL of active tab) & "\\n" & (title of active tab)',
     "safari": 'tell application "@APP@" to tell front window to return (URL of current tab) & "\\n" & (name of current tab)',
 }
@@ -118,7 +118,7 @@ def _two_lines(script: str) -> tuple[str, str]:
 _ARC_BUNDLE = "\n".join([
     'tell application "Arc"',
     "  if (count of windows) is 0 then return \"\"",
-    "  tell front window",
+    "  tell " + actions.ARC_WINDOW,
     '    return (URL of active tab) & linefeed & (title of active tab) & linefeed & (title of active space)',
     "  end tell",
     "end tell",
@@ -317,7 +317,7 @@ def arc_space() -> str:
         return ""
     try:
         return actions._osascript(
-            'tell application "Arc" to return title of active space of front window'
+            'tell application "Arc" to return title of active space of @ARCWIN@'
         ).strip()
     except RuntimeError:
         return ""
@@ -383,6 +383,12 @@ class ContextWatcher:
         self._thread = threading.Thread(target=self._refresh, daemon=True,
                                         name="jev-context")
         self._thread.start()
+
+    def peek(self) -> ScreenContext:
+        """Whatever was last seen, however old, without ever touching the screen. For
+        callers on the audio path, where a fresh snapshot is not worth a stalled frame."""
+        with self._lock:
+            return self._ctx or ScreenContext()
 
     def latest(self, wait: float = 0.35) -> ScreenContext:
         """The freshest context available, blocking only briefly for an in-flight refresh."""

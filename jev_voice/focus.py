@@ -22,6 +22,10 @@ ENABLED = os.environ.get("APP_FOCUS", "1") not in ("0", "false", "no")
 # came to the front. Long enough to think of a song, short enough that a command an
 # hour later is not still aimed at it.
 TTL = float(os.environ.get("APP_FOCUS_SECONDS", "120"))
+# How long a just-asked-for app outranks what the screen says is in front. It only has
+# to cover the app coming forward; past that, a different app in front means the user
+# went there themselves.
+GRACE = float(os.environ.get("APP_FOCUS_GRACE_SECONDS", "10"))
 
 _lock = threading.Lock()
 
@@ -73,6 +77,11 @@ def current(ctx=None) -> str:
     # context is a snapshot taken before the app finished coming forward, so "open
     # spotify" / "search for daniel caesar" still read as a browser search. Every later
     # open re-notes, so switching apps by voice keeps up on its own.
-    if state.fresh():
+    #
+    # But only for as long as that takes. It used to win for the whole two minutes, so
+    # "open youtube", then clicking into WhatsApp and saying "open Rudra", was still
+    # read as a sentence about the browser.
+    if state.fresh() and (not front or front == state.app
+                          or time.monotonic() - state.at < GRACE):
         return state.app
     return front

@@ -94,7 +94,7 @@ def arc_space_entities() -> list[Entity]:
         return []
     try:
         raw = actions._osascript(
-            'tell application "Arc" to return title of every space of front window'
+            'tell application "Arc" to return title of every space of @ARCWIN@'
         )
     except RuntimeError:
         return []

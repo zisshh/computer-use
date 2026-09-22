@@ -99,6 +99,13 @@ WHISPER_DRAFT_PORT = int(os.environ.get("WHISPER_DRAFT_PORT", "8179"))
 # or "wispr" (Wispr Flow's REST API -- more accurate on names, but a network round trip
 # and your audio leaves the machine).
 STT_BACKEND = os.environ.get("STT_BACKEND", "whisper").lower()
+# Local Parakeet TDT v2 model.
+# Set this to the local model directory in .env, for example:
+# PARAKEET_MODEL = /Users/rits/Models/parakeet-tdt-0.6b-v2
+# This is the value used when:
+
+# STT_Backend=parakeet
+PARAKEET_MODEL = os.environ.get("PARAKEET_MODEL","")
 WISPR_API_KEY = os.environ.get("WISPR_API_KEY", "")
 WISPR_URL = os.environ.get("WISPR_URL", "https://platform-api.wisprflow.ai/api/v1/dash/api")
 # Feed installed app names to the recogniser so "Spotify" stops coming back as "spot if I am".

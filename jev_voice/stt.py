@@ -1,6 +1,7 @@
 """Speech to text via whisper.cpp's `whisper-server` (Metal accelerated, model stays loaded)."""
 from __future__ import annotations
 
+import tempfile
 import io
 import os
 import re
@@ -46,7 +47,7 @@ def is_noise(text: str) -> bool:
 # base.en's 60 ms, 20 terms cost +7 ms for the same practical benefit. The list must be
 # prioritised rather than truncated alphabetically -- an alphabetical cut drops
 # everything past roughly "R", which is how "Spotify" became "spot if I am".
-_WHISPER_BIAS_MAX = int(os.environ.get("STT_BIAS_TERMS", "50"))
+_WHISPER_BIAS_MAX = int(os.environ.get("STT_BIAS_TERMS", "56"))
 # App names are the weakest terms in the prompt and there are hundreds of them, so
 # they are capped: padding the prompt out with twelve of them cost 6 points of
 # Hinglish recall, because they displaced the names that needed the bias.
@@ -111,54 +112,135 @@ def own_names(limit: int = 8) -> list[str]:
 
         entities = catalog.load(rebuild=False)
     except Exception:
-        return []
+        entities = []
     seen: list[str] = []
     for kind in _OWN_NAME_KINDS:          # spaces and voice channels before text ones
         for e in entities:
             if e.kind == kind and len(e.name) < 24 and e.name not in seen:
                 seen.append(e.name)
-    return seen[:limit]
+    people = [n for n in chat_names() if n not in seen]
+    # People first: a space or a channel misheard is a wrong page, a person misheard is
+    # a message to somebody else.
+    return (people + seen)[:limit]
 
 
 _HINGLISH_FILE = Path(__file__).with_name("data") / "hinglish.json"
 
 
 @lru_cache(maxsize=1)
-def hinglish_terms() -> list[str]:
-    """Hindi command words and Indian names, in the Latin spelling to aim for.
-
-    Whisper has no prior for these, so without the prompt it invents English words that
-    sound similar -- "gaana" becomes "Ghana", "volume thoda" becomes "Valium Thoda".
-    Measured on ggml-small.en: 21% keyword recall without them, 74% with.
-    """
-    if not _HINGLISH:
-        return []
+def _hinglish() -> dict:
     try:
         import json
 
         payload = json.loads(_HINGLISH_FILE.read_text())
+        return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError):
-        return []
-    # Names first: they carry most of the gain and are the least guessable.
-    return list(payload.get("artists", [])) + list(payload.get("function", []))
+        return {}
 
 
-def bias_terms() -> list[str]:
-    """Proper nouns the recogniser should prefer, most-recently-used first.
+def hindi_words() -> list[str]:
+    """Hindi command words, in the Latin spelling to aim for.
 
-    Order is the whole design: the prompt has a budget, and whatever is at the front
-    survives the cut. Rarest first -- Hindi words and Indian names, then the user's own
-    spaces and channels, then a handful of apps.
+    Whisper has no prior for these, so without the prompt it invents English words that
+    sound similar -- "gaana" becomes "Ghana", "volume thoda" becomes "Valium Thoda".
     """
-    if not config.STT_BIAS_VOCAB:
+    return list(_hinglish().get("function", [])) if _HINGLISH else []
+
+
+def artist_names(limit: int) -> list[str]:
+    """Indian artists for the prompt: the ones actually asked for first, then by how
+    likely anyone is to ask. Proper nouns carry almost all of the prompt's gain --
+    measured on ggml-small.en, artists alone took keyword recall from 21% to 68%."""
+    if not _HINGLISH or limit <= 0:
         return []
+    try:
+        from . import artists
+
+        names = artists.prompt_terms(limit)
+        if names:
+            return names
+    except Exception:
+        pass
+    return list(_hinglish().get("artists", []))[:limit]
+
+
+def hinglish_terms() -> list[str]:
+    """Every Hinglish term, names first. Kept for callers that want the whole list."""
+    return artist_names(10_000) + hindi_words()
+
+
+def chat_names(limit: int = 8) -> list[str]:
+    """First names off the chat lists, most recent first. "Open my chat with Rudra"
+    only works if "Rudra" survives transcription."""
+    try:
+        from . import actions, chat
+
+        running = actions.running_apps()
+        found: list[str] = []
+        for app in chat.APPS:
+            if app not in running:
+                continue
+            for name, _row in chat.chats(app)[:12]:
+                first = (chat._norm(name).split() or [""])[0]
+                if len(first) >= 3 and first.isalpha() and first.title() not in found:
+                    found.append(first.title())
+        return found[:limit]
+    except Exception:
+        return []
+
+
+def _recent_apps(limit: int) -> list[str]:
     from . import actions
 
     recent = _last_used()
     names = [a for a in actions.installed_apps() if not a.startswith(".")]
     # Most recently used first; never-opened apps keep a stable alphabetical tail.
-    ranked = sorted(names, key=lambda n: (-recent.get(n, 0.0), n.lower()))
-    return hinglish_terms() + own_names() + ranked[:_WHISPER_BIAS_APPS]
+    return sorted(names, key=lambda n: (-recent.get(n, 0.0), n.lower()))[:limit]
+
+
+# The words every command starts with. Common English needs the prompt less than a rare
+# name does, but said with an unaspirated t "type" came back as "diap", "dayeb", "dipe"
+# -- and seeing the word in the prompt is what tips whisper back towards it.
+_BIAS_VERBS = ("type", "send", "open", "play", "pause", "search")
+_BIAS_OWN = 14          # eight people, then spaces and channels
+_BIAS_HINDI = 8
+
+
+# whisper.cpp keeps the LAST 223 tokens of a prompt and drops the front without a word
+# (max_prompt_ctx = n_text_ctx / 2). Indian names cost about a token per 2.5 characters
+# -- measured: 517 characters, 207 tokens -- so the prompt is held to a character budget
+# here, where what gets dropped is a choice, and it is ordered least important first so
+# that even a miscount costs the fortieth artist and never the word "type".
+_PROMPT_CHARS = int(os.environ.get("STT_BIAS_CHARS", "520"))
+
+
+def bias_terms() -> list[str]:
+    """Proper nouns and command words the recogniser should prefer, least important first.
+
+    The prompt is a budget, and it used to be spent first come, first served: thirty
+    artists and thirty Hindi words are sixty terms against a budget of fifty, so every
+    Arc space, every Discord channel ("General", heard as "journal"), every contact and
+    every app name was cut, every time, silently. Now each kind gets a share, and
+    whatever a kind does not use goes to the artists, who gain the most from it.
+    """
+    if not config.STT_BIAS_VOCAB:
+        return []
+    budget = max(0, _WHISPER_BIAS_MAX)
+    fixed: list[str] = []
+    seen: set[str] = set()
+    for term in (_recent_apps(_WHISPER_BIAS_APPS) + hindi_words()[:_BIAS_HINDI]
+                 + own_names(_BIAS_OWN) + list(_BIAS_VERBS)):
+        if term.casefold() not in seen:
+            seen.add(term.casefold())
+            fixed.append(term)
+    fixed = fixed[-budget:] if budget else []
+    names = [n for n in artist_names(budget) if n.casefold() not in seen]
+    names = names[:max(0, budget - len(fixed))]
+    # Most-asked artist nearest the end, next to the rest of what must survive.
+    terms = names[::-1] + fixed
+    while terms and len(", ".join(terms)) > _PROMPT_CHARS:
+        terms = terms[1:]
+    return terms
 
 
 _PHONETICS_FILE = Path(__file__).with_name("data") / "phonetics.json"
@@ -193,14 +275,51 @@ def correct(text: str) -> str:
         return text
     for pattern, replacement in _phonetic_rules():
         text = pattern.sub(replacement, text)
-    return text
+    # Artists' full names only, and only spellings nobody says meaning anything else:
+    # this runs on every sentence, so "search for the quran" has to come through whole.
+    # The bolder matching waits until the words are known to be about music
+    # (actions.music_query).
+    try:
+        from . import artists
+
+        text = artists.correct(text)
+    except Exception:
+        pass
+    # The verb last: a rule above may have fixed the word it depends on.
+    from . import verbs
+
+    return verbs.snap(text)
 
 
-@lru_cache(maxsize=1)
+# Rebuilt every ten minutes, off the transcription path: who was messaged last and which
+# artists get asked for both change during a session, and reading the chat lists costs
+# an accessibility walk that no utterance should wait for.
+_PROMPT_TTL = 600.0
+_PROMPT: dict = {"at": 0.0, "text": None, "busy": False}
+
+
+def _build_prompt() -> None:
+    try:
+        terms = bias_terms()[:_WHISPER_BIAS_MAX]
+        text = ", ".join(terms) + "." if terms else ""
+    except Exception:
+        text = _PROMPT["text"] or ""
+    _PROMPT.update(at=time.monotonic(), text=text, busy=False)
+
+
 def bias_prompt() -> str:
-    """The whisper initial prompt: the top slice of bias_terms that fits the budget."""
-    terms = bias_terms()[:_WHISPER_BIAS_MAX]
-    return ", ".join(terms) + "." if terms else ""
+    """The whisper initial prompt: bias_terms, within the budget."""
+    if _PROMPT["text"] is None:
+        _build_prompt()
+    elif not _PROMPT["busy"] and time.monotonic() - _PROMPT["at"] > _PROMPT_TTL:
+        import threading
+
+        _PROMPT["busy"] = True
+        threading.Thread(target=_build_prompt, daemon=True, name="jev-bias").start()
+    return _PROMPT["text"] or ""
+
+
+bias_prompt.cache_clear = lambda: _PROMPT.update(at=0.0, text=None, busy=False)  # type: ignore[attr-defined]
 
 
 def _wav_bytes(pcm: np.ndarray, rate: int = config.SAMPLE_RATE) -> bytes:
@@ -211,6 +330,15 @@ def _wav_bytes(pcm: np.ndarray, rate: int = config.SAMPLE_RATE) -> bytes:
         w.setframerate(rate)
         w.writeframes((np.clip(pcm, -1, 1) * 32767).astype(np.int16).tobytes())
     return buf.getvalue()
+
+
+# whisper encodes 30 seconds whatever the clip's length. Telling it to encode less is the
+# one free speed-up on offer: measured on small.en, 1500 -> 108ms, 768 -> 68ms, with no
+# loops or stalls in 120 requests. Off by default all the same -- those clips were a
+# synthetic voice, and two Hinglish ones drifted. scripts/bench_stt.py on recorded
+# utterances is how to find out whether it is safe for a real one. Never on turbo-class
+# weights: they loop.
+_AUDIO_CTX = os.environ.get("WHISPER_AUDIO_CTX", "").strip()
 
 
 class WhisperServer:
@@ -281,11 +409,84 @@ class WhisperServer:
         prompt = bias_prompt()
         if prompt:
             data["prompt"] = prompt
+        if _AUDIO_CTX:
+            data["audio_ctx"] = _AUDIO_CTX
         r = self.http.post(self.url + "/inference", files=files, data=data)
         r.raise_for_status()
         text = (r.json().get("text") or "").strip()
         if is_noise(text) or len(text) < 2:
             return ""
+        return text
+
+class ParakeetMLX:
+    """Local Parakeet TDT v2 speech recognition through parakeet-mlx."""
+
+    def __init__(self) -> None:
+        if not config.PARAKEET_MODEL:
+            raise SystemExit(
+                "PARAKEET_MODEL is not set. Add the local Parakeet model path "
+                "to .env."
+            )
+
+        try:
+            from parakeet_mlx import from_pretrained
+        except ImportError as exc:
+            raise SystemExit(
+                "parakeet-mlx is not installed. Install it with:\n"
+                "  uv add parakeet-mlx"
+            ) from exc
+
+        print(f"▸ Loading Parakeet model: {config.PARAKEET_MODEL}")
+        self.model = from_pretrained(config.PARAKEET_MODEL)
+
+    def start(self) -> None:
+        """Warm up the model before the first real utterance."""
+        silence = np.zeros(
+            int(config.SAMPLE_RATE * 0.5),
+            dtype=np.float32,
+        )
+
+        try:
+            self.transcribe(silence)
+        except Exception as exc:
+            print(f"⚠ Parakeet warm-up failed: {exc}")
+
+    def stop(self) -> None:
+        """Parakeet runs in-process and needs no separate server."""
+        return None
+
+    def transcribe(self, pcm: np.ndarray) -> str:
+        """Transcribe mono float32 PCM using Parakeet TDT v2."""
+
+        pcm = np.asarray(pcm, dtype=np.float32)
+
+        # parakeet-mlx accepts an audio-file path. The rest of this project
+        # supplies normalized mono PCM, so write a temporary 16 kHz WAV.
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav",
+            delete=True,
+        ) as audio_file:
+            audio_file.write(
+                _wav_bytes(
+                    pcm,
+                    rate=config.SAMPLE_RATE,
+                )
+            )
+            audio_file.flush()
+
+            result = self.model.transcribe(audio_file.name)
+
+        # parakeet-mlx normally returns an object with a .text attribute.
+        # Keep this tolerant of versions returning a string or a list.
+        if isinstance(result, (list, tuple)):
+            result = result[0] if result else ""
+
+        text = getattr(result, "text", result)
+        text = str(text or "").strip()
+
+        if is_noise(text) or len(text) < 2:
+            return ""
+
         return text
 
 
@@ -334,21 +535,47 @@ class WisprFlow:
 
 
 def make_stt(draft: bool = False):
-    """The speech-to-text backend named by STT_BACKEND.
+    """Create the speech-to-text backend configured by STT_BACKEND."""
 
-    `draft=True` asks for the engine behind the mid-sentence guesses: a smaller model on
-    its own port, because those fire every few hundred milliseconds and only have to be
-    right enough to start opening an app.
-    """
+    if config.STT_BACKEND == "parakeet":
+        # Parakeet is used for final utterances. Do not use it for speculative
+        # partial transcription until a streaming implementation is added.
+        if draft:
+            return None
+        return ParakeetMLX()
+
     if config.STT_BACKEND == "wispr":
         return WisprFlow()
+
     if config.STT_BACKEND != "whisper":
         raise SystemExit(
-            "Unknown STT_BACKEND=%r (use whisper or wispr)" % config.STT_BACKEND
+            "Unknown STT_BACKEND=%r "
+            "(use whisper, parakeet, or wispr)"
+            % config.STT_BACKEND
         )
+
     if draft:
-        if not config.WHISPER_DRAFT_MODEL or config.WHISPER_DRAFT_MODEL == config.WHISPER_MODEL:
-            return None                      # caller falls back to the main engine
-        return WhisperServer(port=config.WHISPER_DRAFT_PORT,
-                             model=config.WHISPER_DRAFT_MODEL)
+        if (
+            not config.WHISPER_DRAFT_MODEL
+            or config.WHISPER_DRAFT_MODEL == config.WHISPER_MODEL
+        ):
+            return None
+
+        return WhisperServer(
+            port=config.WHISPER_DRAFT_PORT,
+            model=config.WHISPER_DRAFT_MODEL,
+        )
+
+    # Optional Apple Speech fallback for the Whisper backend only.
+    if os.environ.get("STT_ENGINE", "").strip().lower() == "apple":
+        from . import apple_stt
+
+        if apple_stt.available():
+            return apple_stt.AppleSpeech()
+
+        print(
+            "⚠ STT_ENGINE=apple needs macOS 26+ and swiftc; "
+            "using whisper."
+        )
+
     return WhisperServer()

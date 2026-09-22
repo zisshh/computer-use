@@ -1,0 +1,175 @@
+open youtube
+open chrome
+open spotify
+open notion
+open discord
+open whatsapp
+open messages
+open terminal
+open finder
+open settings
+open calendar
+open mail
+open figma
+open linear
+open vs code
+open google drive
+open google docs
+open the downloads folder
+open the desktop folder
+switch to arc
+switch to the work space
+open the ziiro space
+go to github dot com
+go to youtube dot com
+go back
+go to the next page
+close this tab
+close the window
+new tab
+new window
+reopen the closed tab
+refresh the page
+scroll down
+scroll up
+scroll to the top
+scroll down a little more
+zoom in
+zoom out
+full screen
+minimize this
+quit slack
+close spotify
+hide this window
+pause
+resume
+play
+stop
+next song
+previous track
+skip this one
+volume up
+volume down
+mute
+set volume to fifty percent
+turn it down a bit
+what song is this
+take a screenshot
+lock the screen
+turn on do not disturb
+turn off wifi
+turn the brightness up
+what time is it
+what is the weather today
+what is the work schedule
+what is on my calendar tomorrow
+set a timer for ten minutes
+set a timer for forty seven minutes
+remind me to call mom at six
+type hello how are you
+type I will be there in ten minutes
+type thanks, talk soon
+type see the mouth of the river on the map
+type the king of spain visited today
+type that is so real
+type I lost stories from my phone backup
+press enter
+press escape
+select all
+copy that
+paste it
+undo
+redo
+save the file
+delete that word
+send it
+send the message
+reply okay see you soon
+read the last message
+open my chat with ma
+open my chat with maa
+open my chat with karan
+open my chat with shubham
+open chat with akhil
+open chat with neha
+message preetam happy birthday
+message uncle that I am on the way
+message sean that I am running late
+message honey that I am home
+text krishna I will be late
+call johnny
+call mithun
+call the captain of the team
+join the general voice channel
+leave the call
+deafen me
+undeafen me
+mute my mic
+unmute my mic
+search for the quran online
+search for the indian ocean on maps
+search for python list comprehension
+search for cocoa butter
+search for tv side mount brackets
+search for humankind by rutger bregman
+search for nuclear power plants
+search karma yoga
+search ninja gaiden walkthrough
+search the local train timings to dadar
+search my inbox for the invoice
+search for flights to bali
+search for a good bee park near me
+look up the sahara desert on wikipedia
+look up what a raptor eats
+look up the prophet by kahlil gibran
+open the captain america trailer on youtube
+open the sub folder
+open the bali trip photos
+shove this window to the left
+move this window to the right half
+put the stereo in cd mode
+compose a new email
+new document
+open the pull request
+merge the branch
+tell claude to run the tests
+ask claude what the status is
+tell the notion session to continue
+approve it
+reject that
+stop listening
+never mind
+cancel that
+thank you alfred
+that's all for now
+what can you do
+say that again
+how tall is the eiffel tower
+what does a forty seven percent discount come to
+who is the king of england
+how do I cook surreal good pasta
+youtube kholo
+spotify kholo
+chrome band karo
+volume thoda kam karo
+awaaz badhao
+band karo ye gaana
+agla gaana lagao
+pichla gaana lagao
+gaana roko
+phir se chalao
+neeche scroll karo
+upar jao
+yeh tab band kar do
+naya tab kholo
+screenshot le lo
+mummy ko message bhej do
+likho main aa raha hoon
+bhej do
+ruko
+wapas jao
+thoda tez karo
+dheere karo
+mera mail kholo
+kal ka mausam kya hai
+time kya hua hai

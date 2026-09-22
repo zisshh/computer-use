@@ -120,6 +120,17 @@ class Done:
     at: float = field(default_factory=time.monotonic)
 
 
+def _heard_in_the_room() -> bool:
+    """Is something playing out loud, so that the words may not be the user's?"""
+    try:
+        from . import route
+        from .context import media_playing
+
+        return route.leaks_into_the_room() and media_playing()
+    except Exception:
+        return False
+
+
 class Speculator:
     """Runs safe prefixes of an unfinished sentence, and remembers what it ran."""
 
@@ -140,6 +151,7 @@ class Speculator:
         self._grew_at = 0.0
         self._last_stable = ""
         self._final = False
+        self._heard: tuple[str, int] = ("", 0)      # latest partial, and the audio it covers
 
     # ------------------------------------------------------------ lifecycle
 
@@ -153,6 +165,7 @@ class Speculator:
             self._grew_at = time.monotonic()
             self._last_stable = ""
             self._final = False
+            self._heard = ("", 0)
             self.addressed_known = addressed
 
     def seal(self) -> None:
@@ -194,17 +207,43 @@ class Speculator:
 
             # This runs on a background thread, so the gate is free -- and a partial
             # is the most dangerous place to hear a song, because it can act.
+            covered = len(pcm)
             voiced, pcm = vad.gate(pcm)
             if not voiced:
                 return
             text = correct(self.transcribe(pcm))
             if text and not is_noise(text):
+                with self._lock:
+                    if covered >= self._heard[1]:
+                        self._heard = (text, covered)
                 self.feed_text(text)
         except Exception:
             pass
         finally:
             with self._lock:
                 self._busy = False
+
+    def closed_command(self, voiced_samples: int) -> bool:
+        """Are the words so far already a whole command, with nothing left to add?
+
+        Asked during a pause, to decide whether to stop waiting for more. Only a
+        transcript that covers everything said counts -- one from before the last word
+        would end the sentence in the middle of it.
+        """
+        with self._lock:
+            text, covered = self._heard
+            if self._retracted or not text or covered < voiced_samples:
+                return False
+        try:
+            from . import local
+            from .main import strip_wake
+
+            _, command = strip_wake(text)
+            # peek, not latest: this is asked from the loop that reads the microphone.
+            ctx = self.context.peek() if self.context else None
+            return local.closed(local.route(command, ctx, peek=True), command)
+        except Exception:
+            return False
 
     def feed_text(self, partial: str) -> None:
         if _RETRACT.search(partial):
@@ -275,6 +314,30 @@ class Speculator:
 
         try:
             ctx = self.context.latest(wait=0.05) if self.context else None
+            # A clause this machine settles itself is not Jev's to guess at. Asked about
+            # "open Rudra" with WhatsApp in front, it opens a Notion page -- early, and
+            # then the finished sentence is skipped as already done.
+            from . import local
+
+            ours = local.route(clause, ctx)
+            if ours is not None and ours.kind != "launch":
+                return
+            if ours is not None:
+                # An app or a site by its exact name: as safe as early actions get, and
+                # no decision call to wait for.
+                if self._final or self._retracted:
+                    return
+                if not self.addressed_known and _heard_in_the_room():
+                    return              # a video may have said it: wait for the full pass
+                done = local.settle(clause, ctx, dry=self.dry)
+                if done is None or not done.ok:
+                    return
+                record = Done(clause=clause, action="launch", reply=done.reply)
+                with self._lock:
+                    self._done.append(record)
+                if self.on_action:
+                    self.on_action(record)
+                return
             plan = self.brain.evaluate(clause, ctx=ctx, whole=self._last_stable)
         except Exception:
             return

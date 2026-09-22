@@ -272,3 +272,65 @@ def shared() -> Discord:
     if _SHARED is None:
         _SHARED = Discord()
     return _SHARED
+
+
+# ------------------------------------------------------------------ spoken commands
+
+def voice(op: str, channel: str = "") -> str:
+    """Discord voice ops, each confirmed by reading the voice panel back.
+
+    Discord fails silently -- a deep link to a server you are not in does nothing at
+    all -- so every one of these reports what it actually observed afterwards rather
+    than what it asked for.
+    """
+    client = shared()
+    if not client.running():
+        return "Discord isn't running."
+    if not client.arm(wait=2.0):
+        return "I can't read Discord's controls. Check Accessibility permission."
+
+    if op == "join":
+        if not channel:
+            # "connect to a voice channel" names none. Asking back is the worst answer
+            # when the server usually has one obvious room; take the first visible one
+            # and say which, so a wrong guess is obvious and correctable.
+            visible = client.channels().get("voice", [])
+            if not visible:
+                return "I can't see a voice channel in the server that's open."
+            channel = visible[0]
+        state = client.join_voice(channel)
+        if state.connected:
+            return "Connected to " + state.channel + "."
+        names = client.channels().get("voice", [])
+        if not any(channel.casefold() in n.casefold() for n in names):
+            seen = ", ".join(names) or "none"
+            return (f"I can't see a {channel} voice channel in the server that's open. "
+                    f"Visible voice channels: {seen}.")
+        return "I pressed " + channel + " but Discord didn't report a connection."
+    if op == "leave":
+        state = client.disconnect()
+        return "Left the call." if not state.connected else "I couldn't disconnect."
+    if op in ("mute", "unmute"):
+        state = client.set_mute(op == "mute")
+        return "Muted." if state.muted else "Unmuted."
+    if op in ("deafen", "undeafen"):
+        state = client.set_deafen(op == "deafen")
+        return "Deafened." if state.deafened else "Undeafened."
+    return "You're " + client.voice_state().describe() + "."
+
+
+def text_channel(name: str) -> str:
+    """Open a Discord text channel by name, verified through the window title."""
+    client = shared()
+    if not client.running():
+        return "Discord isn't running."
+    client.arm(wait=2.0)
+    element = client.find(
+        lambda r, d, v: d.lower().startswith(name.lower() + " (text channel)"))
+    if element is None or not client.press(element):
+        return f"I can't see a {name} channel in the server that's open."
+    for _ in range(10):
+        time.sleep(0.2)
+        if client.context()[0].casefold() == name.casefold():
+            return "Opened #" + name + "."
+    return "I pressed #" + name + " but Discord didn't switch."
