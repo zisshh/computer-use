@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import sounddevice as sd
 
-from . import config
+from . import aec, config
 
 FRAME_MS = 30
 FRAME = config.SAMPLE_RATE * FRAME_MS // 1000
@@ -124,10 +124,14 @@ class Listener:
         # Optional predicate, given how many samples of the utterance are speech: are
         # the words so far already a whole command? See VADConfig.early_end_ms.
         self.end_early = None
-        self.stream = sd.InputStream(
-            samplerate=config.SAMPLE_RATE, channels=1, dtype="float32", blocksize=FRAME,
-            device=device, callback=self._cb,
-        )
+        if aec.ENABLED:
+            # The laptop's own audio taken out of the mic while the speakers play.
+            self.stream = aec.Capture(device, FRAME, self.q.put)
+        else:
+            self.stream = sd.InputStream(
+                samplerate=config.SAMPLE_RATE, channels=1, dtype="float32", blocksize=FRAME,
+                device=device, callback=self._cb,
+            )
 
     def _cb(self, indata, frames, t, status) -> None:  # noqa: ANN001
         self.q.put(indata[:, 0].copy())
