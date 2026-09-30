@@ -4,7 +4,7 @@ Usage: uv run python bench.py ~typesafe/jev-latest
 """
 import statistics, sys, time
 from concurrent.futures import ThreadPoolExecutor
-from jev_voice.brain import Brain
+from alfred_computer_use.brain import Brain
 
 FRONT = "Google Chrome"
 # (utterance, expected action, expected {arg: value} subset)

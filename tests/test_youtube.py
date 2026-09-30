@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from jev_voice import youtube
-from jev_voice.youtube import Card, Channel, Intent
+from alfred_computer_use import youtube
+from alfred_computer_use.youtube import Card, Channel, Intent
 
 
 # ------------------------------------------------------------------ what was said

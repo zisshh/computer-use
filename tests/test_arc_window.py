@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from jev_voice import actions
+from alfred_computer_use import actions
 
 
 @pytest.fixture

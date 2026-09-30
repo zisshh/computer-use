@@ -6,7 +6,7 @@ import wave
 
 import numpy as np
 
-from jev_voice import recorder
+from alfred_computer_use import recorder
 
 
 def _tone(seconds=0.5):

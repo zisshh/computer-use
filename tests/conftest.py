@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from jev_voice import page
+from alfred_computer_use import page
 
 
 @pytest.fixture(autouse=True)

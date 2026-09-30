@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from jev_voice import chat_intent, verbs
+from alfred_computer_use import chat_intent, verbs
 
 
 @pytest.mark.parametrize("heard,meant", [

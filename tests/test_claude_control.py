@@ -8,8 +8,8 @@ import re
 
 import pytest
 
-from jev_voice import ghostty, routing
-from jev_voice.ghostty import Terminal
+from alfred_computer_use import ghostty, routing
+from alfred_computer_use.ghostty import Terminal
 
 # The five terminals as Ghostty actually reported them on 2026-09-21.
 NOTION = Terminal("382C6FB7", "✳ Notion agency workspace setup",

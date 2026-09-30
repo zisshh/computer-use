@@ -50,7 +50,7 @@ a preference, and it only applies while the speakers play.
 
 ## `AEC=apple`
 
-`jev_voice/aec.py` + `jev_voice/native/aec_mic.swift` (built into `~/.cache/jev-voice/bin`
+`alfred_computer_use/aec.py` + `alfred_computer_use/native/aec_mic.swift` (built into `~/.cache/jev-voice/bin`
 on first use; needs `swiftc`).
 
 - Runs only while `route.leaks_into_the_room()`: the built-in speakers, HDMI, anything

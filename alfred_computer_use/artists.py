@@ -18,7 +18,7 @@ Hence two tiers, split by how much is known about the sentence:
               and a similarity score are all allowed, because "raptor" inside "baawe by
               raptor" can only be one thing.
 
-Both are pure string work over jev_voice/data/artists.json, and both are replayed against
+Both are pure string work over alfred_computer_use/data/artists.json, and both are replayed against
 175 everyday commands and 586 real song titles in tests/test_artists.py.
 """
 from __future__ import annotations
@@ -72,7 +72,7 @@ LIKELY_RANK = 40
 _HALF_LIFE = 30 * 86400.0
 # A count past this is a damaged file, not a habit: as a float weight it overflows.
 _MAX_COUNT = 1_000_000_000
-# How long note() waits for another jev-voice to finish its own read-add-write.
+# How long note() waits for another Alfred to finish its own read-add-write.
 _LOCK_WAIT = 1.0
 # The longest span tried by similarity. Names run to four words ("Nusrat Fateh Ali Khan").
 _MAX_WINDOW = 4
@@ -121,7 +121,7 @@ _MUSIC_WORDS = frozenset({"play", "playing", "song", "songs", "gaana", "gaane", 
 # ...and never one that is a message, a call or dictation, whatever else it says: there
 # the words are the user's own, and "message afsana can you call me back" asks Afsana a
 # question. It is not a request for Afsana Khan. The Hindi verbs and the app names are
-# the ones jev_voice.chat_intent reads as a message: "Maa ko batao ki ...", "Watsapp
+# the ones alfred_computer_use.chat_intent reads as a message: "Maa ko batao ki ...", "Watsapp
 # Rudra ...", "iMessage Tara ...".
 _MESSAGE_WORDS = frozenset({
     "message", "messages", "messaging", "msg", "text", "texts", "texting", "type", "typing",
@@ -1127,7 +1127,7 @@ def _usage(path: Path) -> dict[str, tuple[int, float]]:
 
 @contextmanager
 def _locked(folder: Path) -> Iterator[None]:
-    """Hold the usage folder for one read, add one, write back. Two jev-voice processes
+    """Hold the usage folder for one read, add one, write back. Two Alfred processes
     doing those three steps at once each wrote their own count and one of them was lost
     (four processes noting 100 times each left 107). The folder is the lock, so there is
     no lock file to leave behind, and closing the descriptor lets go even if this process

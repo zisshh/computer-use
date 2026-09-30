@@ -67,14 +67,14 @@ Not exposed by whisper-server, so not cheap.
 
 Already in the project.
 
-- Verb-lexicon snapping with an Indian-accent voicing map exists: `jev_voice/verbs.py` (VERBS, `_VOICING` d->t b->p g->k v->f z->s, listed slips 'diap' / 'dayeb' / 'daeep' -> 'type', dictionary guard, verb-slot regex) plus `jev_voice/data/phonetics.json` ('defend me' -> 'deafen me') via `stt.correct()`.
+- Verb-lexicon snapping with an Indian-accent voicing map exists: `alfred_computer_use/verbs.py` (VERBS, `_VOICING` d->t b->p g->k v->f z->s, listed slips 'diap' / 'dayeb' / 'daeep' -> 'type', dictionary guard, verb-slot regex) plus `alfred_computer_use/data/phonetics.json` ('defend me' -> 'deafen me') via `stt.correct()`.
 - Remaining work is rule hygiene. Accept a rule only if it is mined from at least 3 distinct TRAIN utterances, fires zero times on a negative corpus of previously-correct transcripts plus dictation text, improves DEV, and is position-constrained. Log per-rule fire counts in production.
 
 ## 4. Bench plan
 
 ### 4.1 Passive capture
 
-- Hook `WhisperServer.transcribe()` in `jev_voice/stt.py` and the Brain result. At each Silero endpoint write `<ts>.wav` (16 kHz mono, exactly the buffer sent to STT) and `<ts>.json`.
+- Hook `WhisperServer.transcribe()` in `alfred_computer_use/stt.py` and the Brain result. At each Silero endpoint write `<ts>.wav` (16 kHz mono, exactly the buffer sent to STT) and `<ts>.json`.
 - Sidecar fields: raw transcript; text after `correct()`; bias terms sent; model id and params; frontmost app; (action, args) executed; STT ms; macOS build; mic device; optional accent-mode tag; implicit-failure flags (repeat within ~10 s, undo, cancel); per-token probabilities.
 - Guards: local disk only; skip capture while a call app holds the mic; nothing is uploaded unless the user opts in to the hosted arm.
 - Labeling: a weekly 5-minute review tool. Play the clip, Enter to accept or edit the text, re-run the Brain on the corrected text to propose gold (action, args), confirm.
@@ -261,14 +261,14 @@ Housekeeping.
 
 ## Trying the Apple engine
 
-The #1 pick is now in the repo as an opt-in: `jev_voice/native/apple_stt.swift` (the sidecar), `jev_voice/apple_stt.py` (builds it, keeps it warm, falls back), `scripts/bench_stt.py` (the A/B). It takes the finished sentence only; drafts stay on whisper base.en. It replaces whisper for that pass rather than running beside it, so there is no arbitration yet: that waits for the bench to say whether Apple wins on the real voice. No compiler, en-IN missing, a hang past the timeout, a crash, junk on the pipe: that utterance goes to whisper, and three failures in a row bench Apple for five minutes.
+The #1 pick is now in the repo as an opt-in: `alfred_computer_use/native/apple_stt.swift` (the sidecar), `alfred_computer_use/apple_stt.py` (builds it, keeps it warm, falls back), `scripts/bench_stt.py` (the A/B). It takes the finished sentence only; drafts stay on whisper base.en. It replaces whisper for that pass rather than running beside it, so there is no arbitration yet: that waits for the bench to say whether Apple wins on the real voice. No compiler, en-IN missing, a hang past the timeout, a crash, junk on the pipe: that utterance goes to whisper, and three failures in a row bench Apple for five minutes.
 
 ```sh
 cd /Users/rits/development/jev-voice
 
 # 1. Can this Mac run it, and does the sidecar build? (about 6 s once, then cached
 #    in ~/.cache/jev-voice/bin/apple-stt and rebuilt only when the .swift changes)
-.venv/bin/python -c "from jev_voice import apple_stt; print(apple_stt.available(), apple_stt.build())"
+.venv/bin/python -c "from alfred_computer_use import apple_stt; print(apple_stt.available(), apple_stt.build())"
 
 # 2. Its tests. The last one builds the real sidecar and synthesises "open spotify"
 #    into a file with `say -o`; nothing is played.

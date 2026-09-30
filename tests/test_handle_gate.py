@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jev_voice import main
-from jev_voice.brain import Plan
+from alfred_computer_use import main
+from alfred_computer_use.brain import Plan
 
 
 class Brain:

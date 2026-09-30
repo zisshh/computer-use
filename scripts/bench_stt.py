@@ -3,7 +3,7 @@
 
 Every accent number so far came from `say -v Rishi`, and the synthetic voice said
 small.en was fine while the real one got "diap hello". The recorder now keeps what was
-actually said (jev_voice/recorder.py); this plays those clips to both engines -- same
+actually said (alfred_computer_use/recorder.py); this plays those clips to both engines -- same
 bias terms, same corrections -- and says which one heard them.
 
     cd /Users/rits/development/jev-voice
@@ -184,7 +184,7 @@ class _NoFallback:
 
 def make_engines(names: Sequence[str], whisper_port: int | None) -> dict[str, object]:
     """Start what can be started; say why for the rest. Both warm themselves in start()."""
-    from jev_voice import apple_stt, config, stt
+    from alfred_computer_use import apple_stt, config, stt
 
     engines: dict[str, object] = {}
     for name in names:
@@ -210,7 +210,7 @@ def make_engines(names: Sequence[str], whisper_port: int | None) -> dict[str, ob
 
 
 def hear(name: str, engine: object, pcm: np.ndarray) -> Heard:
-    from jev_voice import stt
+    from alfred_computer_use import stt
 
     started = time.perf_counter()
     try:
@@ -333,7 +333,7 @@ def parse(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse(argv)
-    from jev_voice import recorder
+    from alfred_computer_use import recorder
 
     root = (args.dir or recorder.root_dir()).expanduser()
     clips = find_clips(root, args.limit) if root.is_dir() else []

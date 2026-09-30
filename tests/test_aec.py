@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jev_voice import aec, audio
+from alfred_computer_use import aec, audio
 
 FRAME = 8
 

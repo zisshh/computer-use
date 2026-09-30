@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jev_voice import actions, routing
+from alfred_computer_use import actions, routing
 
 
 def tab(url):

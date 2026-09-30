@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jev_voice import local, streaming
-from jev_voice.audio import FRAME, FRAME_MS, Listener, VADConfig
+from alfred_computer_use import local, streaming
+from alfred_computer_use.audio import FRAME, FRAME_MS, Listener, VADConfig
 
 
 def listener(frames, end_early=None, vad=None):

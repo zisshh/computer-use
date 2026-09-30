@@ -91,7 +91,7 @@ Set it once:
 MIC="USB Condenser"        # in .env
 ```
 
-`jev-voice --list-devices` prints the names. Headphones win by even more, because then
+`alfred --list-devices` prints the names. Headphones win by even more, because then
 the leakage is zero and none of this matters.
 
 ## Echo cancellation — what it would take

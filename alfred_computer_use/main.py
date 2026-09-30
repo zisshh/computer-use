@@ -1,11 +1,11 @@
-"""Jev Voice: speak to your Mac.
+"""Alfred (alfred-computer-use): speak to your Mac.
 
-    uv run jev-voice                     # hands-free: say "Alfred, ..." (or tap Caps Lock, then speak)
-    uv run jev-voice --hold              # Caps Lock: hold to talk (tap = toggle), no wake word
-    uv run jev-voice --always-on         # open mic, every utterance is a command (no wake word)
-    uv run jev-voice --ptt               # press Enter to talk, Enter to stop
-    uv run jev-voice --text "open chrome and go to youtube"      # no mic
-    uv run jev-voice --text "..." --dry-run                        # plan only
+    uv run alfred-computer-use                     # hands-free: say "Alfred, ..." (or tap Caps Lock, then speak)
+    uv run alfred-computer-use --hold              # Caps Lock: hold to talk (tap = toggle), no wake word
+    uv run alfred-computer-use --always-on         # open mic, every utterance is a command (no wake word)
+    uv run alfred-computer-use --ptt               # press Enter to talk, Enter to stop
+    uv run alfred-computer-use --text "open chrome and go to youtube"      # no mic
+    uv run alfred-computer-use --text "..." --dry-run                        # plan only
 """
 from __future__ import annotations
 
@@ -782,7 +782,7 @@ def run_capslock(s: Session) -> None:
             if tap.start():
                 break
             if perms.get("accessibility") and perms.get("input_monitoring"):
-                print("  Permissions granted but the tap still fails. Restart Jev Voice.")
+                print("  Permissions granted but the tap still fails. Restart Alfred.")
                 s.speaker.say("Permissions granted. Please restart me.")
                 sys.exit(3)
             perms = request_permissions()
@@ -904,7 +904,7 @@ def run_voice(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(prog="jev-voice", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(prog="alfred-computer-use", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--text", help="run one command from text instead of the microphone")
     p.add_argument("--dry-run", action="store_true", help="plan with Jev but do not touch the computer")
     p.add_argument("--hold", action="store_true", help="Caps Lock hold-to-talk only, no wake word")

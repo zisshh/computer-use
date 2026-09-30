@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jev_voice import apple_stt, stt
+from alfred_computer_use import apple_stt, stt
 
 # Speaks the sidecar's protocol, and logs every launch and every request header so a
 # test can see exactly what Python sent. The first request of the first launch is always

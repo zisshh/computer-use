@@ -1,4 +1,4 @@
-// jev-voice's Apple speech sidecar: DictationTranscriber (SpeechAnalyzer, macOS 26+)
+// alfred-computer-use's Apple speech sidecar: DictationTranscriber (SpeechAnalyzer, macOS 26+)
 // behind a pipe, because PyObjC cannot reach these Swift-only async APIs.
 //
 //   apple-stt [locale=en-IN] [--install]

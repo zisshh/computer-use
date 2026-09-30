@@ -1,4 +1,4 @@
-// The microphone through Apple's voice processing, for jev_voice/aec.py (AEC=apple).
+// The microphone through Apple's voice processing, for alfred_computer_use/aec.py (AEC=apple).
 //
 //   aec-mic [--in <name fragment>]        (no --in: the system default input)
 //           [--out <name fragment>]       (tests only; no --out: the default output)

@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("parakeet_mlx")
 import parakeet_mlx.audio
 
-from jev_voice import config, stt
+from alfred_computer_use import config, stt
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "sample.wav"

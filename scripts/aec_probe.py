@@ -48,8 +48,8 @@ import sounddevice as sd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jev_voice import config
-from jev_voice.apple_stt import cache_dir
+from alfred_computer_use import config
+from alfred_computer_use.apple_stt import cache_dir
 
 RATE = 16_000
 KEEP_RUNS = 5          # older probe folders (room recordings) are deleted
@@ -359,7 +359,7 @@ def verdict(lv: dict[str, Levels]) -> tuple[str, list[str], dict[str, float | No
 def load_ears():
     """Parakeet for the transcripts; the level numbers stand without it."""
     try:
-        from jev_voice import stt
+        from alfred_computer_use import stt
 
         model = stt.ParakeetMLX()
         return lambda pcm: model.transcribe(pcm) if len(pcm) > RATE // 4 else ""

@@ -2,7 +2,7 @@
   "schema_version": 2,
   "_comment": [
     "Indian music artists the user asks for by name, with the Latin-script spellings an",
-    "English-biased recogniser produces instead. Read by jev_voice/artists.py.",
+    "English-biased recogniser produces instead. Read by alfred_computer_use/artists.py.",
     "",
     "`name` is the canonical Spotify spelling: it is what gets searched for and what goes",
     "into whisper's initial prompt. `aka` are other right names for the same artist.",

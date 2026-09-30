@@ -1033,7 +1033,7 @@ def play_on_youtube(query: str) -> str:
     if not results:
         return "I couldn't find " + query + " on YouTube."
     title, href = max(results, key=lambda r: __import__(
-        "jev_voice.catalog", fromlist=["score"]).score(query, r[0]))
+        "alfred_computer_use.catalog", fromlist=["score"]).score(query, r[0]))
     if not href.startswith("http"):
         href = "https://www.youtube.com" + href
     browser_js("location.href=" + repr(href).replace("'", '"') + ";'nav'")

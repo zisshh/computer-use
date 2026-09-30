@@ -14,8 +14,8 @@ import inspect
 
 import pytest
 
-from jev_voice import chat_intent
-from jev_voice.chat_intent import CHAT_APPS, ChatIntent, parse
+from alfred_computer_use import chat_intent
+from alfred_computer_use.chat_intent import CHAT_APPS, ChatIntent, parse
 
 WA, IM = "WhatsApp", "Messages"
 BROWSER = "Arc"
@@ -1021,6 +1021,6 @@ def test_the_parser_imports_nothing_that_touches_the_screen():
         if isinstance(node, ast.Import):
             imported |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
-            assert node.level == 0, "no relative imports: nothing of jev_voice is needed"
+            assert node.level == 0, "no relative imports: nothing of alfred_computer_use is needed"
             imported.add(node.module or "")
     assert imported <= {"__future__", "re", "unicodedata", "dataclasses"}, imported

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from jev_voice import page
+from alfred_computer_use import page
 
 
 def T(name, i=0, y=100, x=100, role="a"):

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# One-shot setup for Jev Voice on macOS.
+# One-shot setup for Alfred (alfred-computer-use) on macOS.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -37,13 +37,13 @@ PLIST
 launchctl bootout "gui/$(id -u)/ai.jev.capslock" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENTS/ai.jev.capslock.plist"
 
-echo "▸ 'jev' launcher in ~/.local/bin"
+echo "▸ 'alfred' launcher in ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/jev" <<LAUNCH
+cat > "$HOME/.local/bin/alfred" <<LAUNCH
 #!/bin/zsh
-cd "$ROOT" && exec uv run jev-voice "\$@"
+cd "$ROOT" && exec uv run alfred-computer-use "\$@"
 LAUNCH
-chmod +x "$HOME/.local/bin/jev"
+chmod +x "$HOME/.local/bin/alfred"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc";; esac
 
 echo "▸ Permissions (grant your terminal app: Cursor / Terminal / iTerm)"
@@ -54,6 +54,6 @@ sleep 1
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
 
 echo
-echo "✔ Done. Restart your terminal, then run:  jev"
+echo "✔ Done. Restart your terminal, then run:  alfred"
 echo "  Hold CAPS LOCK and speak. Tap CAPS LOCK to toggle hands-free."
 echo "  Undo the remap any time:  hidutil property --set '{\"UserKeyMapping\":[]}'  and remove ~/Library/LaunchAgents/ai.jev.capslock.plist"

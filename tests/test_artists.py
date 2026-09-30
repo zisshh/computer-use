@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from jev_voice import artists
-from jev_voice.artists import Artist
+from alfred_computer_use import artists
+from alfred_computer_use.artists import Artist
 
 DATA = Path(__file__).with_name("data")
 
@@ -642,7 +642,7 @@ _PHONETICS_REWRITES = pytest.mark.xfail(
     pytest.param(t, marks=_PHONETICS_REWRITES) if "neha kakkad" in t else t
     for t in MESSAGE_BODIES + CONTACTS + PLAIN_WORDS])
 def test_the_whole_stt_pass_leaves_it_alone_too(text):
-    from jev_voice import stt
+    from alfred_computer_use import stt
 
     assert stt.correct(text) == text
 
@@ -686,7 +686,7 @@ def test_a_bare_name_waits_for_the_music_tier():
 
 
 def test_the_whole_stt_pass_still_fixes_a_music_request():
-    from jev_voice import stt
+    from alfred_computer_use import stt
 
     assert stt.correct("play corona jula on spotify") == "play Karan Aujla on Spotify"
 
@@ -906,11 +906,11 @@ def test_note_ignores_what_is_not_a_name(tmp_path, junk):
 
 
 def test_note_counts_every_call_from_processes_running_at_once(tmp_path):
-    """Two jev-voice processes noting at the same moment must not lose each other's
+    """Two Alfred processes noting at the same moment must not lose each other's
     counts: read, add one and write back is three steps another process can split."""
     usage = tmp_path / "artist_usage.json"
     root = Path(__file__).resolve().parents[1]
-    script = "from jev_voice import artists\nfor _ in range(50):\n    artists.note('King')\n"
+    script = "from alfred_computer_use import artists\nfor _ in range(50):\n    artists.note('King')\n"
     env = {**os.environ, "JEV_ARTIST_USAGE": str(usage)}
     workers = [subprocess.Popen([sys.executable, "-c", script], cwd=root, env=env)
                for _ in range(4)]
@@ -939,7 +939,7 @@ MESSAGE_COMMANDS = [
 
 @pytest.mark.parametrize("text, focus", MESSAGE_COMMANDS)
 def test_a_message_body_goes_out_in_the_users_own_words(text, focus):
-    from jev_voice import chat_intent, stt
+    from alfred_computer_use import chat_intent, stt
 
     assert artists.correct(text) == text
     assert stt.correct(text) == text
@@ -972,7 +972,7 @@ NOT_ASKING_FOR_THEM = [
 
 @pytest.mark.parametrize("text", NOT_ASKING_FOR_THEM)
 def test_a_music_word_somewhere_else_does_not_open_the_gate(text):
-    from jev_voice import stt
+    from alfred_computer_use import stt
 
     assert artists.correct(text) == text
     assert stt.correct(text) == text
@@ -986,7 +986,7 @@ def test_a_music_word_somewhere_else_does_not_open_the_gate(text):
     ("queue quran aujla next", "queue Karan Aujla next"),
 ])
 def test_correct_hears_listen_shuffle_and_queue(heard, meant):
-    from jev_voice import stt
+    from alfred_computer_use import stt
 
     assert stt.correct(heard) == meant
 

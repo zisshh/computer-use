@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jev_voice import chat, focus, local, youtube
+from alfred_computer_use import chat, focus, local, youtube
 
 
 def screen(front="Arc", url="https://www.youtube.com/", browser="Arc"):
@@ -88,7 +88,7 @@ def test_launching_an_app_notes_it_as_the_subject(monkeypatch):
 
 
 def test_launching_a_site_says_what_happened(monkeypatch):
-    from jev_voice.actions import OpenResult
+    from alfred_computer_use.actions import OpenResult
 
     monkeypatch.setattr(local.actions, "open_site", lambda url: OpenResult("Arc", reused_tab=True))
     assert local.settle("open youtube", DESKTOP).reply == "Switching to youtube."

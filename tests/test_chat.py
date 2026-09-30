@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from jev_voice import chat
+from alfred_computer_use import chat
 
 # Shaped like a real chat list: emoji, a group and a person sharing a word, a contact
 # saved without vowels, a long formal name.
@@ -63,7 +63,7 @@ class FakeApp:
         self.front = True
 
     def install(self, monkeypatch):
-        from jev_voice import actions
+        from alfred_computer_use import actions
 
         monkeypatch.setattr(chat, "_front", lambda app: self.front)
         monkeypatch.setattr(chat, "chats", lambda app: [(n, n) for n in self.names])
