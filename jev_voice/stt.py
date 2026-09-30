@@ -1,17 +1,16 @@
 """Speech to text via whisper.cpp's `whisper-server` (Metal accelerated, model stays loaded)."""
 from __future__ import annotations
 
-import tempfile
 import io
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import wave
-from pathlib import Path
-
 from functools import lru_cache
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -419,17 +418,27 @@ class WhisperServer:
         return text
 
 class ParakeetMLX:
-    """Local Parakeet TDT v2 speech recognition through parakeet-mlx."""
+    """Local Parakeet TDT speech recognition through parakeet-mlx, in-process.
+
+    It takes no prompt, so none of the vocabulary biasing above reaches it; only
+    `correct()` does. One model serves the finished sentence and the mid-sentence
+    guesses (make_stt(draft=True) has nothing smaller to offer, so main falls back to
+    this one), and those run on different threads. MLX makes no promise about one model
+    driven from two threads at once, so a lock takes one decode at a time: a guess in
+    flight holds the finished sentence back by at most one decode (~80 ms for 3 s).
+    """
 
     def __init__(self) -> None:
         if not config.PARAKEET_MODEL:
             raise SystemExit(
-                "PARAKEET_MODEL is not set. Add the local Parakeet model path "
-                "to .env."
+                "PARAKEET_MODEL is empty. Set it in .env to a Hugging Face id "
+                "(mlx-community/parakeet-tdt-0.6b-v2) or a model directory."
             )
 
         try:
+            import mlx.core as mx
             from parakeet_mlx import from_pretrained
+            from parakeet_mlx.audio import get_logmel
         except ImportError as exc:
             raise SystemExit(
                 "parakeet-mlx is not installed. Install it with:\n"
@@ -438,55 +447,36 @@ class ParakeetMLX:
 
         print(f"▸ Loading Parakeet model: {config.PARAKEET_MODEL}")
         self.model = from_pretrained(config.PARAKEET_MODEL)
+        rate = self.model.preprocessor_config.sample_rate
+        if rate != config.SAMPLE_RATE:
+            # The file path resampled through ffmpeg; PCM handed over directly cannot be.
+            raise SystemExit(
+                f"PARAKEET_MODEL expects {rate} Hz audio; this app records at "
+                f"{config.SAMPLE_RATE} Hz"
+            )
+        self._mx = mx
+        self._logmel = get_logmel
+        self._lock = threading.Lock()
 
     def start(self) -> None:
-        """Warm up the model before the first real utterance."""
-        silence = np.zeros(
-            int(config.SAMPLE_RATE * 0.5),
-            dtype=np.float32,
-        )
-
+        """First decode compiles the Metal kernels; pay that before the user speaks."""
         try:
-            self.transcribe(silence)
-        except Exception as exc:
+            self.transcribe(np.zeros(int(config.SAMPLE_RATE * 0.5), dtype=np.float32))
+        except Exception as exc:  # noqa: BLE001 -- a failed warm-up costs one slow utterance
             print(f"⚠ Parakeet warm-up failed: {exc}")
 
     def stop(self) -> None:
         """Parakeet runs in-process and needs no separate server."""
-        return None
 
     def transcribe(self, pcm: np.ndarray) -> str:
-        """Transcribe mono float32 PCM using Parakeet TDT v2."""
-
-        pcm = np.asarray(pcm, dtype=np.float32)
-
-        # parakeet-mlx accepts an audio-file path. The rest of this project
-        # supplies normalized mono PCM, so write a temporary 16 kHz WAV.
-        with tempfile.NamedTemporaryFile(
-            suffix=".wav",
-            delete=True,
-        ) as audio_file:
-            audio_file.write(
-                _wav_bytes(
-                    pcm,
-                    rate=config.SAMPLE_RATE,
-                )
-            )
-            audio_file.flush()
-
-            result = self.model.transcribe(audio_file.name)
-
-        # parakeet-mlx normally returns an object with a .text attribute.
-        # Keep this tolerant of versions returning a string or a list.
-        if isinstance(result, (list, tuple)):
-            result = result[0] if result else ""
-
-        text = getattr(result, "text", result)
-        text = str(text or "").strip()
-
+        # Straight from memory. The model's own transcribe() takes a path and decodes it
+        # with an ffmpeg subprocess: 124 ms against 80 ms for the same 3 s clip.
+        with self._lock:
+            audio = self._mx.array(np.asarray(pcm, dtype=np.float32))
+            mel = self._logmel(audio, self.model.preprocessor_config)
+            text = (self.model.generate(mel)[0].text or "").strip()
         if is_noise(text) or len(text) < 2:
             return ""
-
         return text
 
 
@@ -538,8 +528,8 @@ def make_stt(draft: bool = False):
     """Create the speech-to-text backend configured by STT_BACKEND."""
 
     if config.STT_BACKEND == "parakeet":
-        # Parakeet is used for final utterances. Do not use it for speculative
-        # partial transcription until a streaming implementation is added.
+        # No smaller Parakeet to guess with: None makes the mid-sentence guesses share
+        # the final model (main falls back to it), and ParakeetMLX serialises the two.
         if draft:
             return None
         return ParakeetMLX()
@@ -549,9 +539,7 @@ def make_stt(draft: bool = False):
 
     if config.STT_BACKEND != "whisper":
         raise SystemExit(
-            "Unknown STT_BACKEND=%r "
-            "(use whisper, parakeet, or wispr)"
-            % config.STT_BACKEND
+            f"Unknown STT_BACKEND={config.STT_BACKEND!r} (use whisper, parakeet, or wispr)"
         )
 
     if draft:

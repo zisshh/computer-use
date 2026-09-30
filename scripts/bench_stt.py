@@ -10,6 +10,7 @@ bias terms, same corrections -- and says which one heard them.
     .venv/bin/python scripts/bench_stt.py --limit 20            # side by side, newest 20
     .venv/bin/python scripts/bench_stt.py --limit 20 --label    # then type what you said
     .venv/bin/python scripts/bench_stt.py --dir ~/clips         # any folder of wav files
+    .venv/bin/python scripts/bench_stt.py --engines whisper,parakeet
 
 Without labels it can only say how often the engines disagree. With them
 (labels.jsonl beside the clips: {"file": ..., "said": ...}) it scores each engine:
@@ -35,7 +36,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 RATE = 16000
-ENGINES = ("whisper", "apple")
+ENGINES = ("whisper", "apple", "parakeet")
 
 
 # -- scoring ---------------------------------------------------------------------
@@ -195,6 +196,8 @@ def make_engines(names: Sequence[str], whisper_port: int | None) -> dict[str, ob
                     print("– apple: needs macOS 26+ and swiftc; skipped")
                     continue
                 engine = apple_stt.AppleSpeech(fallback=_NoFallback)
+            elif name == "parakeet":
+                engine = stt.ParakeetMLX()
             else:
                 print(f"– {name}: unknown engine (use {', '.join(ENGINES)}); skipped")
                 continue

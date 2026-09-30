@@ -95,17 +95,14 @@ if WHISPER_DRAFT_MODEL and not WHISPER_DRAFT_MODEL.is_absolute():
     WHISPER_DRAFT_MODEL = ROOT / WHISPER_DRAFT_MODEL
 WHISPER_DRAFT_PORT = int(os.environ.get("WHISPER_DRAFT_PORT", "8179"))
 
-# Speech to text: "whisper" (local whisper.cpp, ~100 ms, nothing leaves the machine)
-# or "wispr" (Wispr Flow's REST API -- more accurate on names, but a network round trip
-# and your audio leaves the machine).
+# Speech to text: "whisper" (local whisper.cpp, ~100 ms, nothing leaves the machine),
+# "parakeet" (local Parakeet TDT on MLX, in-process, ~80 ms for 3 s -- but it takes no
+# prompt, so STT_BIAS_* never reach it), or "wispr" (Wispr Flow's REST API -- more
+# accurate on names, but a network round trip and your audio leaves the machine).
 STT_BACKEND = os.environ.get("STT_BACKEND", "whisper").lower()
-# Local Parakeet TDT v2 model.
-# Set this to the local model directory in .env, for example:
-# PARAKEET_MODEL = /Users/rits/Models/parakeet-tdt-0.6b-v2
-# This is the value used when:
-
-# STT_Backend=parakeet
-PARAKEET_MODEL = os.environ.get("PARAKEET_MODEL","")
+# STT_BACKEND=parakeet: a Hugging Face id (downloaded once, then read from the cache) or
+# a model directory.
+PARAKEET_MODEL = os.environ.get("PARAKEET_MODEL", "mlx-community/parakeet-tdt-0.6b-v2")
 WISPR_API_KEY = os.environ.get("WISPR_API_KEY", "")
 WISPR_URL = os.environ.get("WISPR_URL", "https://platform-api.wisprflow.ai/api/v1/dash/api")
 # Feed installed app names to the recogniser so "Spotify" stops coming back as "spot if I am".
